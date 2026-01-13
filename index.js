@@ -121,7 +121,16 @@ async function callGroq(systemPrompt, userPrompt) {
 }
 
 /* =====================
-   BOT COMMANDS
+   GROUP DEBUG COMMAND
+===================== */
+bot.command("groupid", async ctx => {
+  if (ctx.chat.type === "group" || ctx.chat.type === "supergroup") {
+    await ctx.reply(`📌 Group Chat ID:\n${ctx.chat.id}`);
+  }
+});
+
+/* =====================
+   BOT START (DM ONLY)
 ===================== */
 bot.start(async ctx => {
   if (ctx.chat.type !== "private") return;
@@ -147,6 +156,8 @@ bot.start(async ctx => {
    DM HANDLER (TURN LAW)
 ===================== */
 bot.on("text", async ctx => {
+  // 🚨 IMPORTANT FIX
+  if (ctx.message.text.startsWith("/")) return;
   if (ctx.chat.type !== "private") return;
 
   if (ctx.message.text.length > 800) {
@@ -257,12 +268,9 @@ Narrate consequences ONLY.
   );
 }
 
-bot.command("groupid", async ctx => {
-  if (ctx.chat.type === "group" || ctx.chat.type === "supergroup") {
-    await ctx.reply(`📌 Group Chat ID:\n${ctx.chat.id}`);
-  }
-});
-
+/* =====================
+   DEBUG LOGGER
+===================== */
 bot.on("message", ctx => {
   console.log("MESSAGE RECEIVED FROM:", ctx.chat.id, ctx.chat.type);
 });
