@@ -168,6 +168,10 @@ async function callGroq(systemPrompt, userPrompt) {
   return res.data.choices[0].message.content;
 }
 
+bot.command("groupid", ctx => {
+  ctx.reply(String(ctx.chat.id));
+});
+
 /* =====================
    /help (DM + GROUP)
 ===================== */
