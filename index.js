@@ -263,6 +263,10 @@ bot.command("groupid", async ctx => {
   }
 });
 
+bot.on("message", ctx => {
+  console.log("MESSAGE RECEIVED FROM:", ctx.chat.id, ctx.chat.type);
+});
+
 /* =====================
    WEBHOOK
 ===================== */
