@@ -14,7 +14,7 @@ const PORT = process.env.PORT || 3000;
 /* =====================
    CONSTANTS
 ===================== */
-const ADMIN_GROUP_ID = "-1003320676598";
+const ADMIN_GROUP_ID = "-5127338138";
 const MAX_PLAYERS = 3;
 
 /* =====================
