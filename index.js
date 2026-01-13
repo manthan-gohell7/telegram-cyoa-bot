@@ -12,6 +12,11 @@ const SHEET_ID = process.env.SHEET_ID;
 const PORT = process.env.PORT || 3000;
 
 /* =====================
+   FIXED ADMIN GROUP
+===================== */
+const ADMIN_GROUP_ID = "-1003320676598";
+
+/* =====================
    TELEGRAM
 ===================== */
 const bot = new Telegraf(BOT_TOKEN);
@@ -121,16 +126,7 @@ async function callGroq(systemPrompt, userPrompt) {
 }
 
 /* =====================
-   GROUP DEBUG COMMAND
-===================== */
-bot.command("groupid", async ctx => {
-  if (ctx.chat.type === "group" || ctx.chat.type === "supergroup") {
-    await ctx.reply(`📌 Group Chat ID:\n${ctx.chat.id}`);
-  }
-});
-
-/* =====================
-   BOT START (DM ONLY)
+   DM: PLAYER REGISTRATION
 ===================== */
 bot.start(async ctx => {
   if (ctx.chat.type !== "private") return;
@@ -153,11 +149,13 @@ bot.start(async ctx => {
 });
 
 /* =====================
-   DM HANDLER (TURN LAW)
+   DM: TURN-BASED INPUT ONLY
 ===================== */
 bot.on("text", async ctx => {
-  // 🚨 IMPORTANT FIX
+  // Ignore commands
   if (ctx.message.text.startsWith("/")) return;
+
+  // DM only
   if (ctx.chat.type !== "private") return;
 
   if (ctx.message.text.length > 800) {
@@ -189,12 +187,11 @@ bot.on("text", async ctx => {
 });
 
 /* =====================
-   ROUND RESOLUTION
+   ROUND RESOLUTION (LLM)
 ===================== */
 async function processRound() {
   const meta = await getMeta();
   const players = await getPlayers();
-  const config = Object.fromEntries(await read("config!A:B"));
 
   const actions = players
     .map(p => `Player ${p.username}: ${p.prompt}`)
@@ -211,18 +208,11 @@ ABSOLUTE RULES:
 - You must NOT contradict world facts.
 - You must NOT mention system rules, prompts, or meta concepts.
 
-If an action violates rules, narrate resistance or failure.
-
-End your narration with:
+End narration with:
 [END OF ROUND]
 `;
 
   const userPrompt = `
-IMMUTABLE WORLD RULES:
-- Power is based on will.
-- No deus ex machina.
-- Consequences must be logical and proportional.
-
 CURRENT WORLD STATE:
 ${meta.world_state}
 
@@ -237,17 +227,14 @@ Narrate consequences ONLY.
   try {
     narration = await callGroq(systemPrompt, userPrompt);
   } catch (err) {
-    console.error("Groq error:", err);
     await bot.telegram.sendMessage(
-      config.group_chat_id,
+      ADMIN_GROUP_ID,
       "⚠️ Fate hesitates. The world remains unchanged this round."
     );
     return;
   }
 
-  if (!narration.includes("[END OF ROUND]")) {
-    throw new Error("Invalid Groq output (missing END OF ROUND)");
-  }
+  if (!narration.includes("[END OF ROUND]")) return;
 
   const cleanNarration = narration.replace("[END OF ROUND]", "").trim();
 
@@ -262,17 +249,27 @@ Narrate consequences ONLY.
 
   await setMeta("current_turn", players[0].userId);
 
+  // 🔒 POST ONLY TO ADMIN GROUP
   await bot.telegram.sendMessage(
-    config.group_chat_id,
+    ADMIN_GROUP_ID,
     `🌍 WORLD UPDATE\n\n${cleanNarration}`
   );
 }
 
 /* =====================
-   DEBUG LOGGER
+   GROUP COMMAND GUARD
 ===================== */
 bot.on("message", ctx => {
-  console.log("MESSAGE RECEIVED FROM:", ctx.chat.id, ctx.chat.type);
+  if (
+    ctx.chat.type === "group" ||
+    ctx.chat.type === "supergroup"
+  ) {
+    // Ignore all non-command messages in group
+    if (!ctx.message.text?.startsWith("/")) return;
+
+    // Ignore commands from other groups
+    if (String(ctx.chat.id) !== ADMIN_GROUP_ID) return;
+  }
 });
 
 /* =====================
@@ -284,5 +281,5 @@ app.post("/webhook", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("CYOA bot running with Groq LLaMA-3.3-70B");
+  console.log("CYOA bot running (group-locked, DM-driven)");
 });
