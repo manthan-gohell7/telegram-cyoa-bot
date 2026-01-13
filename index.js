@@ -203,9 +203,23 @@ bot.command("help", async ctx => {
 /* =====================
    /init (GROUP ONLY)
 ===================== */
+
+async function clearSheet(range) {
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SHEET_ID,
+    range
+  });
+}
+
 bot.command("init", async ctx => {
   if (String(ctx.chat.id) !== ADMIN_GROUP_ID) return;
 
+  // HARD CLEAR all data
+  await clearSheet("meta!A:Z");
+  await clearSheet("players!A:Z");
+  await clearSheet("config!A:Z");
+
+  // Recreate meta
   await write("meta!A1:B4", [
     ["key", "value"],
     ["phase", "1"],
@@ -213,17 +227,22 @@ bot.command("init", async ctx => {
     ["world_state", "The world has not yet begun."]
   ]);
 
+  // Recreate players header
   await write("players!A1:D1", [
     ["user_id", "username", "has_played", "last_prompt"]
   ]);
 
+  // Recreate config
   await write("config!A1:B2", [
     ["key", "value"],
     ["max_players", String(MAX_PLAYERS)]
   ]);
 
-  await ctx.reply("🌍 The world has been conceptualized.\nAstra Mare awaits its players.");
+  await ctx.reply(
+    "🌍 The world has been re-conceptualized.\nAll previous fates have been erased.\nAwaiting players..."
+  );
 });
+
 
 /* =====================
    /start (DM REGISTRATION)
@@ -232,7 +251,10 @@ bot.start(async ctx => {
   if (ctx.chat.type !== "private") return;
 
   const players = await getPlayers();
-  if (players.find(p => p.userId == ctx.from.id)) return;
+  if (players.find(p => p.userId == ctx.from.id)) {
+     return ctx.reply("🧭 You are already registered in this world.");
+  }
+
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
