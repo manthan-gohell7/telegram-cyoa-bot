@@ -257,6 +257,12 @@ Narrate consequences ONLY.
   );
 }
 
+bot.command("groupid", async ctx => {
+  if (ctx.chat.type === "group" || ctx.chat.type === "supergroup") {
+    await ctx.reply(📌 Group Chat ID:\n${ctx.chat.id});
+  }
+});
+
 /* =====================
    WEBHOOK
 ===================== */
