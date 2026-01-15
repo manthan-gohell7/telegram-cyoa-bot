@@ -103,9 +103,13 @@ bot.command("init", async ctx => {
     );
   }
 
-  const buttons = snapshot.docs.map(doc =>
-    Markup.button.callback(doc.id, `LOAD_${doc.id}`)
-  );
+  const buttons = snapshot.docs.map(doc => {
+    const data = doc.data();
+    return Markup.button.callback(
+      `🌍 ${data.meta.name}`,
+      `LOAD_${doc.id}`
+    );
+  });
 
   buttons.push(Markup.button.callback("➕ Create New World", "CREATE_WORLD"));
 
@@ -119,7 +123,6 @@ bot.command("init", async ctx => {
    CREATE WORLD FLOW
 ===================== */
 bot.action("CREATE_WORLD", async ctx => {
-  console.log("🔥 CREATE_WORLD clicked");
   await ctx.answerCbQuery();
 
   if (!ctx.chat || ctx.chat.type === "private") {
@@ -130,20 +133,18 @@ bot.action("CREATE_WORLD", async ctx => {
   const adminId = String(ctx.from.id);
 
   await db.collection("sessions").doc(groupId).set({
-    step: "WORLD_PROMPT",
+    step: "WORLD_NAME",
     adminId,
     buffer: [],
     createdAt: Date.now()
   });
 
-
   await ctx.telegram.sendMessage(
     groupId,
-    "🌏 WORLD BUILDING PROMPT\n\nSend the lore, history, factions, and power systems.",
+    "🌍 **WORLD NAME**\n\nSend the name of this world.",
     { parse_mode: "Markdown" }
   );
 });
-
 
 /* =====================
    WORLD PROMPT HANDLING (DM)
@@ -167,6 +168,46 @@ bot.on("text", async ctx => {
 
   const text = ctx.message.text.trim();
   const key = `${groupId}_${session.step}`;
+
+  /* =====================
+   WORLD NAME (UNIQUE)
+===================== */
+  if (session.step === "WORLD_NAME") {
+    const worldName = text.replace(/\s+/g, " ").trim();
+
+    if (worldName.length < 3 || worldName.length > 40) {
+      return ctx.reply("❌ World name must be 3–40 characters long.");
+    }
+
+    // 🔍 Check uniqueness (case-insensitive)
+    const existing = await db
+      .collection("worlds")
+      .where("meta.name_lower", "==", worldName.toLowerCase())
+      .limit(1)
+      .get();
+
+    if (!existing.empty) {
+      return ctx.reply(
+        "⚠️ A world with this name already exists.\n\n" +
+        "Please choose a different name."
+      );
+    }
+
+    await sessionRef.update({
+      worldName,
+      worldNameLower: worldName.toLowerCase(),
+      step: "WORLD_PROMPT"
+    });
+
+    return ctx.reply(
+      "🌏 **WORLD BUILDING PROMPT**\n\n" +
+      "Send the lore, history, factions, and power systems.\n" +
+      "You may send multiple messages.\n" +
+      "Send /done when finished.",
+      { parse_mode: "Markdown" }
+    );
+  }
+
 
   /* =====================
      WORLD PROMPT (MULTI)
@@ -194,7 +235,6 @@ bot.on("text", async ctx => {
       return ctx.reply(
         "🧠 **SYSTEM PROMPT**\n\n" +
         "Send the system prompt in one or more messages.\n" +
-        "When finished, send: /done",
         { parse_mode: "Markdown" }
       );
     }
@@ -242,7 +282,10 @@ bot.on("text", async ctx => {
       await db.collection("worlds").doc(worldId).set({
         meta: {
           id: worldId,
+          name: session.worldName,
+          name_lower: session.worldNameLower, // 🔑 REQUIRED
           groupId,
+          createdBy: session.adminId,
           phase: 1,
           round: 0,
           currentTurn: "",
@@ -255,6 +298,7 @@ bot.on("text", async ctx => {
           systemPrompt: fullSystemPrompt
         }
       });
+
 
       await db.collection("groups").doc(groupId).set({
         activeWorldId: worldId,
