@@ -221,6 +221,7 @@ bot.on("text", async ctx => {
    WEBHOOK
 ===================== */
 app.post("/webhook", (req, res) => {
+  console.log("UPDATE TYPE:", Object.keys(req.body));
   bot.handleUpdate(req.body);
   res.sendStatus(200);
 });
