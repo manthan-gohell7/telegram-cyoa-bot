@@ -220,12 +220,13 @@ bot.command("init", async ctx => {
   await clearSheet("config!A:Z");
 
   // Recreate meta
-  await write("meta!A1:B4", [
-    ["key", "value"],
-    ["phase", "1"],
-    ["current_turn", ""],
-    ["world_state", "The world has not yet begun."]
-  ]);
+  await write("meta!A1:B5", [
+  ["key", "value"],
+  ["phase", "1"],
+  ["current_turn", ""],
+  ["world_state", "The world has not yet begun."],
+  ["pending_character", ""]
+]);
 
   // Recreate players header
   await write("players!A1:D1", [
