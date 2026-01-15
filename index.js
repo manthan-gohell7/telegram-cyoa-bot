@@ -337,12 +337,16 @@ bot.on("text", async ctx => {
 
     const players = await getPlayers();
 
-    await bot.telegram.sendMessage(
-      ADMIN_GROUP_ID,
-      `🧍 A new soul enters the world.\n→ **${characterName}** (${players.length}/${MAX_PLAYERS})`
-    );
+    const tgName = ctx.from.first_name
+        ? `@${ctx.from.first_name}`
+        : ctx.from.username || "Unknown";
 
-    await ctx.reply(`✨ Welcome, **${characterName}**. Your story begins.`);
+await bot.telegram.sendMessage(
+  ADMIN_GROUP_ID,
+  `🧍 A new soul enters the world.\n${tgName} → ${characterName} (${players.length}/${MAX_PLAYERS})`
+);
+    
+    await ctx.reply(`✨ Welcome, ${characterName}. Your story begins.`);
 
     if (players.length === MAX_PLAYERS) {
       await startWorldIntro();
