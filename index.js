@@ -92,7 +92,10 @@ A/B/C   → Choose an action when prompted
 bot.command("init", async ctx => {
   if (String(ctx.chat.id) !== String(ADMIN_GROUP_ID)) return;
 
-  const snapshot = await db.collection("worlds").get();
+  const snapshot = await db
+    .collection("worlds")
+    .where("meta.groupId", "==", String(ctx.chat.id))
+    .get();
 
   if (snapshot.empty) {
     return ctx.reply(
@@ -147,6 +150,36 @@ bot.action("CREATE_WORLD", async ctx => {
 });
 
 /* =====================
+   LOAD EXISTING WORLD
+===================== */
+bot.action(/^LOAD_(.+)/, async ctx => {
+  await ctx.answerCbQuery();
+
+  if (String(ctx.chat.id) !== String(ADMIN_GROUP_ID)) return;
+
+  const worldId = ctx.match[1];
+  const worldSnap = await db.collection("worlds").doc(worldId).get();
+
+  if (!worldSnap.exists) {
+    return ctx.reply("❌ This world no longer exists.");
+  }
+
+  await db.collection("groups").doc(String(ctx.chat.id)).set({
+    activeWorldId: worldId,
+    updatedAt: Date.now()
+  });
+
+  const world = worldSnap.data();
+
+  await ctx.reply(
+    `🌍 **World Loaded**\n\n` +
+    `Name: **${world.meta.name}**\n` +
+    `Players may now DM /start`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+/* =====================
    WORLD PROMPT HANDLING (DM)
 ===================== */
 bot.on("text", async ctx => {
@@ -196,8 +229,10 @@ bot.on("text", async ctx => {
     await sessionRef.update({
       worldName,
       worldNameLower: worldName.toLowerCase(),
+      buffer: [],               // 🔑 reset buffer
       step: "WORLD_PROMPT"
     });
+
 
     return ctx.reply(
       "🌏 **WORLD BUILDING PROMPT**\n\n" +
@@ -214,7 +249,13 @@ bot.on("text", async ctx => {
   ===================== */
   if (session.step === "WORLD_PROMPT") {
     // FINALIZE WORLD PROMPT
-    if (text === "/done") {
+    if (text.toLowerCase() === "/done") {
+
+      if (!session.buffer.length) {
+        return ctx.reply("⚠️ Prompt cannot be empty.");
+      }
+
+
       // Cancel pending debounce reply
       if (ackTimers.has(key)) {
         clearTimeout(ackTimers.get(key));
@@ -264,8 +305,17 @@ bot.on("text", async ctx => {
      SYSTEM PROMPT (MULTI)
   ===================== */
   if (session.step === "SYSTEM_PROMPT") {
+    if (!session.worldPrompt) {
+      return ctx.reply("⚠️ World prompt missing. Restart with /init.");
+    }
+
+
     // FINALIZE SYSTEM PROMPT
-    if (text === "/done") {
+    if (text.toLowerCase() === "/done") {
+      if (!session.buffer.length) {
+        return ctx.reply("⚠️ Prompt cannot be empty.");
+      }
+
       // Cancel pending debounce reply
       if (ackTimers.has(key)) {
         clearTimeout(ackTimers.get(key));
