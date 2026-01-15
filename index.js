@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
    CONSTANTS
 ===================== */
 const ADMIN_GROUP_ID = "-5127338138";
-const MAX_PLAYERS = 3;
+const MAX_PLAYERS = 1;
 
 /* =====================
    WORLD CANON (IMMUTABLE)
@@ -123,11 +123,11 @@ async function setMeta(key, value) {
 async function getPlayers() {
   const rows = await read("players!A:D");
   return rows.slice(1).map(r => ({
-    userId: r[0],
-    username: r[1],
-    hasPlayed: r[2] === "TRUE",
-    prompt: r[3] || ""
-  }));
+  userId: r[0],
+  characterName: r[1],
+  hasPlayed: r[2] === "TRUE",
+  prompt: r[3] || ""
+}));
 }
 
 async function updatePlayer(userId, data) {
@@ -229,8 +229,8 @@ bot.command("init", async ctx => {
 
   // Recreate players header
   await write("players!A1:D1", [
-    ["user_id", "username", "has_played", "last_prompt"]
-  ]);
+  ["user_id", "character_name", "has_played", "last_prompt"]
+]);
 
   // Recreate config
   await write("config!A1:B2", [
@@ -239,7 +239,7 @@ bot.command("init", async ctx => {
   ]);
 
   await ctx.reply(
-    "🌍 The world has been re-conceptualized.\nAll previous fates have been erased.\nAwaiting players..."
+    "🌍 The world has been re-conceptualized.\nAll previous souls have been erased.\nAwaiting new souls..."
   );
 });
 
@@ -247,34 +247,29 @@ bot.command("init", async ctx => {
 /* =====================
    /start (DM REGISTRATION)
 ===================== */
+
+async function setPendingCharacter(userId) {
+  await setMeta("pending_character", String(userId));
+}
+
+async function clearPendingCharacter() {
+  await setMeta("pending_character", "");
+}
+
 bot.start(async ctx => {
   if (ctx.chat.type !== "private") return;
 
   const players = await getPlayers();
+
   if (players.find(p => p.userId == ctx.from.id)) {
-     return ctx.reply("🧭 You are already registered in this world.");
+    return ctx.reply("🧭 Your soul already resides in the world.");
   }
 
+  await setPendingCharacter(ctx.from.id);
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: "players!A:D",
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [[ctx.from.id, ctx.from.username || "unknown", "FALSE", ""]]
-    }
-  });
-
-  await bot.telegram.sendMessage(
-    ADMIN_GROUP_ID,
-    `🧍 Player Joined: @${ctx.from.username} (${players.length + 1}/${MAX_PLAYERS})`
+  await ctx.reply(
+    "🧙 You stand at the edge of Astra Mare.\n\nWhat is the name of your character?"
   );
-
-  await ctx.reply("🧭 You have entered Astra Mare.");
-
-  if (players.length + 1 === MAX_PLAYERS) {
-    await startWorldIntro();
-  }
 });
 
 /* =====================
@@ -296,7 +291,7 @@ async function startWorldIntro() {
   for (const p of players) {
     const personal = await callGroq(
       `You are the GOD of Astra Mare.\n${WORLD_CANON}`,
-      `Write a personal opening scene ONLY for ${p.username}.`
+      `Write a personal opening scene ONLY for ${p.characterName}.`
     );
     await bot.telegram.sendMessage(p.userId, personal);
   }
@@ -305,7 +300,7 @@ async function startWorldIntro() {
 
   await bot.telegram.sendMessage(
     ADMIN_GROUP_ID,
-    `🔁 CURRENT TURN\n→ Player: @${players[0].username}\n→ Action: DM ONLY`
+    `🔁 CURRENT TURN\n→ Player: @${players[0].characterName}\n→ Action: DM ONLY`
   );
 }
 
@@ -313,10 +308,46 @@ async function startWorldIntro() {
    DM TURN INPUT
 ===================== */
 bot.on("text", async ctx => {
-  if (ctx.message.text.startsWith("/")) return;
+if (ctx.message.text.startsWith("/")) return;
   if (ctx.chat.type !== "private") return;
 
   const meta = await getMeta();
+
+  // 🧙 CHARACTER NAME REGISTRATION FLOW
+  if (meta.pending_character === String(ctx.from.id)) {
+    const characterName = ctx.message.text.trim();
+
+    if (characterName.length < 2 || characterName.length > 30) {
+      return ctx.reply("❌ Character name must be 2–30 characters long.");
+    }
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "players!A:D",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [[ctx.from.id, characterName, "FALSE", ""]]
+      }
+    });
+
+    await clearPendingCharacter();
+
+    const players = await getPlayers();
+
+    await bot.telegram.sendMessage(
+      ADMIN_GROUP_ID,
+      `🧍 A new soul enters the world.\n→ **${characterName}** (${players.length}/${MAX_PLAYERS})`
+    );
+
+    await ctx.reply(`✨ Welcome, **${characterName}**. Your destiny awaits!`);
+
+    if (players.length === MAX_PLAYERS) {
+      await startWorldIntro();
+    }
+
+    return;
+  }
+   
   if (String(ctx.from.id) !== meta.current_turn) {
     return ctx.reply("🌫️ Fate does not yet call upon you.");
   }
@@ -344,7 +375,7 @@ async function processRound() {
   const meta = await getMeta();
   const players = await getPlayers();
 
-  const actions = players.map(p => `${p.username}: ${p.prompt}`).join("\n");
+  const actions = players.map(p => `${p.characterName}: ${p.prompt}`).join("\n");
 
   const narration = await callGroq(
     `You are the GOD of Astra Mare.\n${WORLD_CANON}`,
@@ -365,7 +396,7 @@ async function processRound() {
 
   await bot.telegram.sendMessage(
     ADMIN_GROUP_ID,
-    `🌍 WORLD UPDATE\n\n${clean}\n\n🔁 NEXT TURN: @${next.username}`
+    `🌍 WORLD UPDATE\n\n${clean}\n\n🔁 NEXT TURN: @${next.characterName}`
   );
 }
 
