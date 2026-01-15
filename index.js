@@ -301,7 +301,7 @@ async function startWorldIntro() {
 
   await bot.telegram.sendMessage(
     ADMIN_GROUP_ID,
-    `🔁 CURRENT TURN\n→ Player: ${players[0].characterName}\n→ Action: DM ONLY`
+    `🔁 CURRENT TURN → ${players[0].characterName}`
   );
 }
 
