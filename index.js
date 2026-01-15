@@ -11,6 +11,8 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ADMIN_GROUP_ID = process.env.ADMIN_GROUP_ID;
 const PORT = process.env.PORT || 3000;
 
+const ackTimers = new Map();
+
 /* =====================
    FIREBASE INIT
 ===================== */
@@ -147,6 +149,7 @@ bot.action("CREATE_WORLD", async ctx => {
    WORLD PROMPT HANDLING (DM)
 ===================== */
 bot.on("text", async ctx => {
+  // GROUP ONLY
   if (ctx.chat.type === "private") return;
 
   const groupId = String(ctx.chat.id);
@@ -157,19 +160,30 @@ bot.on("text", async ctx => {
 
   const session = snap.data();
 
-  // Only admin may continue
+  // ONLY ADMIN CAN DEFINE WORLD
   if (String(ctx.from.id) !== session.adminId) {
     return ctx.reply("⛔ Only the world creator may define this.");
   }
 
-  const text = ctx.message.text;
+  const text = ctx.message.text.trim();
+  const key = `${groupId}_${session.step}`;
 
   /* =====================
      WORLD PROMPT (MULTI)
   ===================== */
   if (session.step === "WORLD_PROMPT") {
+    // FINALIZE WORLD PROMPT
     if (text === "/done") {
-      const fullWorldPrompt = session.buffer.join("\n\n");
+      // Cancel pending debounce reply
+      if (ackTimers.has(key)) {
+        clearTimeout(ackTimers.get(key));
+        ackTimers.delete(key);
+      }
+
+      const fullWorldPrompt = session.buffer
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
 
       await sessionRef.update({
         worldPrompt: fullWorldPrompt,
@@ -178,26 +192,51 @@ bot.on("text", async ctx => {
       });
 
       return ctx.reply(
-        "🧠 SYSTEM PROMPT\n\n" +
+        "🧠 **SYSTEM PROMPT**\n\n" +
         "Send the system prompt in one or more messages.\n" +
         "When finished, send: /done",
         { parse_mode: "Markdown" }
       );
     }
 
+    // BUFFER INPUT
     await sessionRef.update({
       buffer: admin.firestore.FieldValue.arrayUnion(text)
     });
 
-    return ctx.reply("📥 Added. Continue or send /done when finished.");
+    // DEBOUNCED ACK
+    if (ackTimers.has(key)) {
+      clearTimeout(ackTimers.get(key));
+    }
+
+    ackTimers.set(
+      key,
+      setTimeout(async () => {
+        await ctx.reply("📥 Added. Continue or send /done when finished.");
+        ackTimers.delete(key);
+      }, 1000)
+    );
+
+    return;
   }
 
   /* =====================
      SYSTEM PROMPT (MULTI)
   ===================== */
   if (session.step === "SYSTEM_PROMPT") {
+    // FINALIZE SYSTEM PROMPT
     if (text === "/done") {
-      const fullSystemPrompt = session.buffer.join(" ");
+      // Cancel pending debounce reply
+      if (ackTimers.has(key)) {
+        clearTimeout(ackTimers.get(key));
+        ackTimers.delete(key);
+      }
+
+      const fullSystemPrompt = session.buffer
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+
       const worldId = `world_${Date.now()}`;
 
       await db.collection("worlds").doc(worldId).set({
@@ -225,7 +264,7 @@ bot.on("text", async ctx => {
       await sessionRef.delete();
 
       return ctx.reply(
-        `✅ World Created Successfully\n\n` +
+        `✅ **World Created Successfully**\n\n` +
         `🌍 ID: \`${worldId}\`\n` +
         `📌 Bound to this group\n\n` +
         `Players may now DM /start`,
@@ -233,11 +272,25 @@ bot.on("text", async ctx => {
       );
     }
 
+    // BUFFER INPUT
     await sessionRef.update({
       buffer: admin.firestore.FieldValue.arrayUnion(text)
     });
 
-    return ctx.reply("📥 Added. Continue or send /done when finished.");
+    // DEBOUNCED ACK
+    if (ackTimers.has(key)) {
+      clearTimeout(ackTimers.get(key));
+    }
+
+    ackTimers.set(
+      key,
+      setTimeout(async () => {
+        await ctx.reply("📥 Added. Continue or send /done when finished.");
+        ackTimers.delete(key);
+      }, 1000)
+    );
+
+    return;
   }
 });
 
