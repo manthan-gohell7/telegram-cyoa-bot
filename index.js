@@ -308,12 +308,14 @@ async function startWorldIntro() {
    DM TURN INPUT
 ===================== */
 bot.on("text", async ctx => {
-if (ctx.message.text.startsWith("/")) return;
+  if (ctx.message.text.startsWith("/")) return;
   if (ctx.chat.type !== "private") return;
 
   const meta = await getMeta();
 
-  // 🧙 CHARACTER NAME REGISTRATION FLOW
+  /* =====================
+     CHARACTER NAME REGISTRATION (MUST BE FIRST)
+  ===================== */
   if (meta.pending_character === String(ctx.from.id)) {
     const characterName = ctx.message.text.trim();
 
@@ -330,7 +332,7 @@ if (ctx.message.text.startsWith("/")) return;
       }
     });
 
-    await clearPendingCharacter();
+    await setMeta("pending_character", "");
 
     const players = await getPlayers();
 
@@ -339,19 +341,25 @@ if (ctx.message.text.startsWith("/")) return;
       `🧍 A new soul enters the world.\n→ **${characterName}** (${players.length}/${MAX_PLAYERS})`
     );
 
-    await ctx.reply(`✨ Welcome, **${characterName}**. Your destiny awaits!`);
+    await ctx.reply(`✨ Welcome, **${characterName}**. Your story begins.`);
 
     if (players.length === MAX_PLAYERS) {
       await startWorldIntro();
     }
 
-    return;
+    return; // ⛔ VERY IMPORTANT
   }
-   
+
+  /* =====================
+     TURN ENFORCEMENT
+  ===================== */
   if (String(ctx.from.id) !== meta.current_turn) {
     return ctx.reply("🌫️ Fate does not yet call upon you.");
   }
 
+  /* =====================
+     NORMAL TURN INPUT
+  ===================== */
   await updatePlayer(ctx.from.id, {
     hasPlayed: "TRUE",
     prompt: ctx.message.text
@@ -360,6 +368,7 @@ if (ctx.message.text.startsWith("/")) return;
   await ctx.reply("✅ Your will has been recorded.");
 
   const players = await getPlayers();
+
   if (players.every(p => p.hasPlayed)) {
     await processRound();
   } else {
