@@ -130,12 +130,14 @@ bot.action("CREATE_WORLD", async ctx => {
   await db.collection("sessions").doc(groupId).set({
     step: "WORLD_PROMPT",
     adminId,
+    buffer: [],
     createdAt: Date.now()
   });
 
+
   await ctx.telegram.sendMessage(
     groupId,
-    "🌏 **WORLD BUILDING PROMPT**\n\nSend the lore, history, factions, and power systems.",
+    "🌏 WORLD BUILDING PROMPT\n\nSend the lore, history, factions, and power systems.",
     { parse_mode: "Markdown" }
   );
 });
@@ -145,75 +147,97 @@ bot.action("CREATE_WORLD", async ctx => {
    WORLD PROMPT HANDLING (DM)
 ===================== */
 bot.on("text", async ctx => {
-  // ONLY group messages
   if (ctx.chat.type === "private") return;
 
   const groupId = String(ctx.chat.id);
   const sessionRef = db.collection("sessions").doc(groupId);
-  const sessionSnap = await sessionRef.get();
+  const snap = await sessionRef.get();
 
-  if (!sessionSnap.exists) return;
+  if (!snap.exists) return;
 
-  const session = sessionSnap.data();
+  const session = snap.data();
 
-  // Only admin can continue setup
+  // Only admin may continue
   if (String(ctx.from.id) !== session.adminId) {
     return ctx.reply("⛔ Only the world creator may define this.");
   }
 
+  const text = ctx.message.text;
+
   /* =====================
-     WORLD PROMPT
+     WORLD PROMPT (MULTI)
   ===================== */
   if (session.step === "WORLD_PROMPT") {
+    if (text === "/done") {
+      const fullWorldPrompt = session.buffer.join("\n\n");
+
+      await sessionRef.update({
+        worldPrompt: fullWorldPrompt,
+        buffer: [],
+        step: "SYSTEM_PROMPT"
+      });
+
+      return ctx.reply(
+        "🧠 SYSTEM PROMPT\n\n" +
+        "Send the system prompt in one or more messages.\n" +
+        "When finished, send: /done",
+        { parse_mode: "Markdown" }
+      );
+    }
+
     await sessionRef.update({
-      worldPrompt: ctx.message.text,
-      step: "SYSTEM_PROMPT"
+      buffer: admin.firestore.FieldValue.arrayUnion(text)
     });
 
-    return ctx.reply(
-      "🧠 **SYSTEM PROMPT**\n\n" +
-      "Define rules, god behavior, fairness, narrative limits.",
-      { parse_mode: "Markdown" }
-    );
+    return ctx.reply("📥 Added. Continue or send /done when finished.");
   }
 
   /* =====================
-     SYSTEM PROMPT → CREATE WORLD
+     SYSTEM PROMPT (MULTI)
   ===================== */
   if (session.step === "SYSTEM_PROMPT") {
-    const worldId = `world_${Date.now()}`;
+    if (text === "/done") {
+      const fullSystemPrompt = session.buffer.join(" ");
+      const worldId = `world_${Date.now()}`;
 
-    await db.collection("worlds").doc(worldId).set({
-      meta: {
-        id: worldId,
-        groupId,
-        phase: 1,
-        round: 0,
-        currentTurn: "",
-        worldState: "",
-        maxPlayers: 1,
-        createdAt: Date.now()
-      },
-      prompts: {
-        worldPrompt: session.worldPrompt,
-        systemPrompt: ctx.message.text
-      }
+      await db.collection("worlds").doc(worldId).set({
+        meta: {
+          id: worldId,
+          groupId,
+          phase: 1,
+          round: 0,
+          currentTurn: "",
+          worldState: "",
+          maxPlayers: 1,
+          createdAt: Date.now()
+        },
+        prompts: {
+          worldPrompt: session.worldPrompt,
+          systemPrompt: fullSystemPrompt
+        }
+      });
+
+      await db.collection("groups").doc(groupId).set({
+        activeWorldId: worldId,
+        updatedAt: Date.now()
+      });
+
+      await sessionRef.delete();
+
+      return ctx.reply(
+        `✅ World Created Successfully\n\n` +
+        `🌍 ID: \`${worldId}\`\n` +
+        `📌 Bound to this group\n\n` +
+        `Players may now DM /start`,
+        { parse_mode: "Markdown" }
+      );
+    }
+
+    await sessionRef.update({
+      buffer: admin.firestore.FieldValue.arrayUnion(text)
     });
 
-    await db.collection("groups").doc(groupId).set({
-      activeWorldId: worldId,
-      updatedAt: Date.now()
-    });
-
-    await sessionRef.delete();
-
-    return ctx.reply(
-      `✅ **World Created Successfully**\n\n` +
-      `🌍 ID: \`${worldId}\`\n` +
-      `📌 Bound to this group\n\n` +
-      `Players may now DM /start`,
-      { parse_mode: "Markdown" }
-    );
+    return ctx.reply("📥 Added. Continue or send /done when finished.");
   }
 });
 
@@ -221,7 +245,6 @@ bot.on("text", async ctx => {
    WEBHOOK
 ===================== */
 app.post("/webhook", (req, res) => {
-  console.log("UPDATE TYPE:", Object.keys(req.body));
   bot.handleUpdate(req.body);
   res.sendStatus(200);
 });
