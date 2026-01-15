@@ -291,9 +291,28 @@ async function startWorldIntro() {
 
   for (const p of players) {
     const personal = await callGroq(
-      `You are the GOD of Astra Mare.\n${WORLD_CANON}`,
-      `Write a personal opening scene ONLY for ${p.characterName}.`
-    );
+  `You are the GOD of Astra Mare.\n${WORLD_CANON}`,
+  `
+Write a personal opening scene ONLY for ${p.characterName}.
+
+MANDATORY FORMAT:
+1. Narrate the situation vividly (5–8 sentences).
+2. Then present EXACTLY THREE choices.
+
+FORMAT THE CHOICES LIKE THIS (STRICT):
+A) <choice description>
+B) <choice description>
+C) <choice description>
+
+RULES FOR CHOICES:
+- Each choice must lead to different consequences.
+- No choice may be obviously superior.
+- All choices must respect world rules.
+- No spoilers of hidden truths.
+- Choices must be grounded in the current scene.
+`
+);
+
     await bot.telegram.sendMessage(p.userId, personal);
   }
 
@@ -363,12 +382,23 @@ await bot.telegram.sendMessage(
   }
 
   /* =====================
-     NORMAL TURN INPUT
-  ===================== */
-  await updatePlayer(ctx.from.id, {
-    hasPlayed: "TRUE",
-    prompt: ctx.message.text
-  });
+   NORMAL TURN INPUT (CHOICE-BASED)
+===================== */
+const text = ctx.message.text.trim();
+
+// Must start with A, B, or C
+if (!/^(A|B|C)[\)\:\- ]/i.test(text)) {
+  return ctx.reply(
+    "❌ Your action must begin with a choice reference.\n\n" +
+    "Example:\nA) I confront the knight head-on."
+  );
+}
+
+await updatePlayer(ctx.from.id, {
+  hasPlayed: "TRUE",
+  prompt: text
+});
+
 
   await ctx.reply("✅ Your will has been recorded.");
 
@@ -393,7 +423,17 @@ async function processRound() {
 
   const narration = await callGroq(
     `You are the GOD of Astra Mare.\n${WORLD_CANON}`,
-    `Current world state:\n${meta.world_state}\n\nPlayer actions:\n${actions}\n\nNarrate consequences logically. End with [END OF ROUND].`
+    `Current world state:\n${meta.world_state}\n\nPlayer actions:\n${actions}\nNarrate consequences logically based on the players' chosen options.
+
+INTERPRETATION RULES:
+- Each action references a choice (A/B/C).
+- Treat the choice as intent, not a fixed script.
+- If a player bends a choice creatively, adapt logically.
+- Never invalidate a choice outright.
+- Consequences must be proportional and consistent.
+
+End with [END OF ROUND].
+`
   );
 
   if (!narration.includes("[END OF ROUND]")) return;
