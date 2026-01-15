@@ -117,6 +117,7 @@ bot.command("init", async ctx => {
    CREATE WORLD FLOW
 ===================== */
 bot.action("CREATE_WORLD", async ctx => {
+  console.log("🔥 CREATE_WORLD clicked");
   await ctx.answerCbQuery();
 
   if (!ctx.chat || ctx.chat.type === "private") {
@@ -132,13 +133,12 @@ bot.action("CREATE_WORLD", async ctx => {
     createdAt: Date.now()
   });
 
-  await ctx.reply(
-    "🌏 **WORLD BUILDING PROMPT**\n\n" +
-    "Send the lore, history, factions, and power systems for this world.",
+  await ctx.telegram.sendMessage(
+    groupId,
+    "🌏 **WORLD BUILDING PROMPT**\n\nSend the lore, history, factions, and power systems.",
     { parse_mode: "Markdown" }
   );
 });
-
 
 
 /* =====================
