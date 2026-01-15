@@ -301,7 +301,7 @@ async function startWorldIntro() {
 
   await bot.telegram.sendMessage(
     ADMIN_GROUP_ID,
-    `🔁 CURRENT TURN\n→ Player: @${players[0].characterName}\n→ Action: DM ONLY`
+    `🔁 CURRENT TURN\n→ Player: ${players[0].characterName}\n→ Action: DM ONLY`
   );
 }
 
@@ -338,7 +338,7 @@ bot.on("text", async ctx => {
     const players = await getPlayers();
 
     const tgName = ctx.from.first_name
-        ? `@${ctx.from.first_name}`
+        ? `${ctx.from.first_name}`
         : ctx.from.username || "Unknown";
 
 await bot.telegram.sendMessage(
@@ -410,7 +410,7 @@ async function processRound() {
 
   await bot.telegram.sendMessage(
     ADMIN_GROUP_ID,
-    `🌍 WORLD UPDATE\n\n${clean}\n\n🔁 NEXT TURN: @${next.characterName}`
+    `🌍 WORLD UPDATE\n\n${clean}\n\n🔁 NEXT TURN: ${next.characterName}`
   );
 }
 
