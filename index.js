@@ -118,44 +118,75 @@ bot.command("init", async ctx => {
 ===================== */
 bot.action("CREATE_WORLD", async ctx => {
   await ctx.answerCbQuery();
-  await ctx.reply("🌏 Send the WORLD BUILDING prompt (lore, history, factions).");
 
-  await db.collection("sessions").doc(String(ctx.from.id)).set({
+  if (!ctx.chat || ctx.chat.type === "private") {
+    return ctx.reply("❌ World creation must be done in the group.");
+  }
+
+  const groupId = String(ctx.chat.id);
+  const adminId = String(ctx.from.id);
+
+  await db.collection("sessions").doc(groupId).set({
     step: "WORLD_PROMPT",
+    adminId,
     createdAt: Date.now()
   });
+
+  await ctx.reply(
+    "🌏 **WORLD BUILDING PROMPT**\n\n" +
+    "Send the lore, history, factions, and power systems for this world.",
+    { parse_mode: "Markdown" }
+  );
 });
+
+
 
 /* =====================
    WORLD PROMPT HANDLING (DM)
 ===================== */
 bot.on("text", async ctx => {
-  if (ctx.chat.type !== "private") return;
+  // ONLY group messages
+  if (ctx.chat.type === "private") return;
 
-  const sessionRef = db.collection("sessions").doc(String(ctx.from.id));
+  const groupId = String(ctx.chat.id);
+  const sessionRef = db.collection("sessions").doc(groupId);
   const sessionSnap = await sessionRef.get();
 
   if (!sessionSnap.exists) return;
 
   const session = sessionSnap.data();
 
-  /* WORLD PROMPT */
+  // Only admin can continue setup
+  if (String(ctx.from.id) !== session.adminId) {
+    return ctx.reply("⛔ Only the world creator may define this.");
+  }
+
+  /* =====================
+     WORLD PROMPT
+  ===================== */
   if (session.step === "WORLD_PROMPT") {
     await sessionRef.update({
       worldPrompt: ctx.message.text,
       step: "SYSTEM_PROMPT"
     });
 
-    return ctx.reply("🧠 Now send the SYSTEM PROMPT (rules, god behavior).");
+    return ctx.reply(
+      "🧠 **SYSTEM PROMPT**\n\n" +
+      "Define rules, god behavior, fairness, narrative limits.",
+      { parse_mode: "Markdown" }
+    );
   }
 
-  /* SYSTEM PROMPT */
+  /* =====================
+     SYSTEM PROMPT → CREATE WORLD
+  ===================== */
   if (session.step === "SYSTEM_PROMPT") {
     const worldId = `world_${Date.now()}`;
 
     await db.collection("worlds").doc(worldId).set({
       meta: {
-        name: worldId,
+        id: worldId,
+        groupId,
         phase: 1,
         round: 0,
         currentTurn: "",
@@ -169,9 +200,20 @@ bot.on("text", async ctx => {
       }
     });
 
+    await db.collection("groups").doc(groupId).set({
+      activeWorldId: worldId,
+      updatedAt: Date.now()
+    });
+
     await sessionRef.delete();
 
-    return ctx.reply(`✅ World created successfully.\nID: ${worldId}`);
+    return ctx.reply(
+      `✅ **World Created Successfully**\n\n` +
+      `🌍 ID: \`${worldId}\`\n` +
+      `📌 Bound to this group\n\n` +
+      `Players may now DM /start`,
+      { parse_mode: "Markdown" }
+    );
   }
 });
 
