@@ -304,12 +304,146 @@ bot.command("init", async (ctx) => {
     return;
   }
 
-  await ctx.reply(
-    "ℹ️ *World already exists.*\n\n" +
-    "If prompts are ready, run /done.\n" +
-    "Otherwise, update them in Firestore.",
-    { parse_mode: "Markdown" }
-  );
+  const world = getWorld();
+
+  if (world.status === "EXTRACT_ROLES_FAILED") {
+    const roles = extractRoles(rolePrompt);
+
+    if (roles.length === 0) {
+      await ctx.reply(
+        "❌ No valid roles found.\n" +
+        "Role prompt must be a numbered list.",
+        { parse_mode: "Markdown" }
+      );
+
+      await updateWorld({
+        status: "EXTRACT_ROLES_FAILED",
+      });
+
+      return;
+    }
+
+    await updateWorld({
+      roles,
+      rolesTaken: [],
+      players: {},          // 🔥 important for fresh session
+      status: "WAITING_PLAYERS",
+      currentPhase: 0,
+      worldState: "",
+      phaseChoices: {}
+    });
+
+    await ctx.reply(
+      "🕰 *Setup complete.*\n\n" +
+      "📩 Players may now DM `/start` to join.\n\n" +
+      `👥 Max players: ${MAX_PLAYERS}`,
+      { parse_mode: "Markdown" }
+    );
+  }
+
+  if (world.status === "WAITING_PLAYERS") {
+    const players = world.players || {};
+
+    let message = "";
+
+    const registered = Object.values(players);
+
+    if (registered.length === 0) {
+      message += "🕰 *Awaiting for players.*\n\n" +
+        "📩 Players may now DM `/start` to join.\n\n" +
+        `👥 Max players: ${MAX_PLAYERS}`;
+    } else {
+      message += "📋 *Registered Players*\n\n" + registered
+        .map(p => `• ${p.characterName}`)
+        .join("\n");
+    }
+
+    await bot.telegram.sendMessage(
+      ADMIN_GROUP_ID,
+      message,
+      { parse_mode: "Markdown" }
+    );
+  }
+
+  if (world.status === "ROLE_SELECTION") {
+    const players = world.players || {};
+    const allSelected = Object.values(players).every(p => p.role);
+
+    if (!allSelected) {
+      // Seperate selected and remaining players for role selection
+      const selectedPlayers = [];
+      const remainingPlayers = [];
+
+      for (const [pid, player] of Object.entries(players)) {
+        if (player.role) {
+          selectedPlayers.push({
+            characterName: player.characterName,
+            role: player.role
+          });
+        } else {
+          remainingPlayers.push({
+            playerId: pid,
+            characterName: player.characterName
+          });
+        }
+      }
+
+      // Role selection status announcement in group
+      let message = "🎭 *Role Selection Status*\n\n";
+
+      if (selectedPlayers.length > 0) {
+        message += "✅ *Selected Roles:*\n";
+        message += selectedPlayers
+          .map(p => `• ${p.characterName} → *${p.role}*`)
+          .join("\n");
+        message += "\n\n";
+      }
+
+      if (remainingPlayers.length > 0) {
+        message += "⌛ *Waiting on:*\n";
+        message += remainingPlayers
+          .map(p => `• ${p.characterName}`)
+          .join("\n");
+      } else {
+        message += "🎉 *All players have selected their roles!*";
+      }
+
+      await bot.telegram.sendMessage(
+        ADMIN_GROUP_ID,
+        message,
+        { parse_mode: "Markdown" }
+      );
+
+      // Send dm to players who have not yet selected their roles
+      for (const p of remainingPlayers) {
+        try {
+          await sendRoleSelection(p.playerId, world);
+        } catch (err) {
+          console.error(`Failed to DM ${p.characterName}`, err.message);
+        }
+      }
+    };
+
+    // Update status
+    await updateWorld({
+      status: "RUNNING",
+      currentPhase: 1,
+      worldState: "The story begins...",
+      phaseChoices: {}
+    });
+
+    // Generate and send group narration
+    await sendGroupNarration(true);
+
+    // Generate and send personal narrations
+    await sendPersonalNarrations();
+  } else if (world.status === "RUNNING") {
+    await ctx.reply(
+      "ℹ️ *World already exists.*\n\n" +
+      "If you want to reset the world, run /reset.\n",
+      { parse_mode: "Markdown" }
+    );
+  }
 });
 
 /* =====================
@@ -347,6 +481,11 @@ bot.command("done", async (ctx) => {
       "Role prompt must be a numbered list.",
       { parse_mode: "Markdown" }
     );
+
+    await updateWorld({
+      status: "EXTRACT_ROLES_FAILED",
+    });
+
     return;
   }
 
