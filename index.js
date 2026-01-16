@@ -35,6 +35,35 @@ const awaitingName = new Set();
 
 const MAX_PLAYERS = 1; // testing
 
+async function checkAndStartRoleSelection(bot) {
+  const snap = await WORLD_REF.get();
+  if (!snap.exists) return;
+
+  const world = snap.data();
+  const players = world.players || {};
+  const joinedCount = Object.keys(players).length;
+
+  if (
+    world.status === "WAITING_PLAYERS" &&
+    joinedCount === MAX_PLAYERS
+  ) {
+    await WORLD_REF.update({ status: "ROLE_SELECTION" });
+
+    let msg = "🎭 *ROLE SELECTION*\n\n";
+    world.roles.forEach((r, i) => {
+      msg += `${i + 1}. ${r}\n`;
+    });
+
+    msg += "\n📩 Role selection will begin in DM.";
+
+    await bot.telegram.sendMessage(
+      ADMIN_GROUP_ID,
+      msg,
+      { parse_mode: "Markdown" }
+    );
+  }
+}
+
 /* =====================
    /INIT – ONE TIME
 ===================== */
@@ -79,7 +108,10 @@ bot.command("init", async (ctx) => {
 
     case "WAITING_PLAYERS": {
       const players = Object.values(world.players || {});
-      const list = players.length
+      const joined = players.length;
+      const remaining = MAX_PLAYERS - joined;
+
+      const list = joined
         ? players.map(p => `• ${p.characterName}`).join("\n")
         : "_No players yet_";
 
@@ -87,9 +119,13 @@ bot.command("init", async (ctx) => {
         "🕰 *World is ready.*\n\n" +
         "👥 Registered players:\n" +
         list + "\n\n" +
-        "📩 Others may DM `/start` to join.",
+        `📊 Players joined: ${joined} / ${MAX_PLAYERS}\n` +
+        `⏳ Remaining slots: ${remaining}`,
         { parse_mode: "Markdown" }
       );
+
+      // 🔥 THIS WAS MISSING
+      await checkAndStartRoleSelection(bot);
       break;
     }
 
@@ -174,21 +210,16 @@ bot.start(async (ctx) => {
      CASE 1: PLAYER ALREADY REGISTERED
   ===================== */
   if (players[playerId]) {
-    if (world.status === "ROLE_SELECTION" && !players[playerId].role) {
-      await ctx.reply(
-        "🎭 *Role selection is in progress.*\n" +
-        "Please select your role when prompted.",
-        { parse_mode: "Markdown" }
-      );
-      return;
-    }
-
     await ctx.reply(
       "✅ You are already registered.\n" +
-      "Please wait for the game to proceed."
+      "Resuming game state..."
     );
+
+    // 🔥 Re-evaluate world progression
+    await checkAndStartRoleSelection(bot);
     return;
   }
+
 
   /* =====================
      CASE 2: NEW PLAYER, CHECK LIMIT
