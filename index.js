@@ -306,6 +306,8 @@ bot.command("init", async (ctx) => {
 
   const world = getWorld();
 
+  let justCompletedRoleExtraction = false;
+
   if (world.status === "EXTRACT_ROLES_FAILED") {
     const roles = extractRoles(rolePrompt);
 
@@ -339,6 +341,8 @@ bot.command("init", async (ctx) => {
       `👥 Max players: ${MAX_PLAYERS}`,
       { parse_mode: "Markdown" }
     );
+
+    justCompletedRoleExtraction = true;
   }
 
   if (world.status === "WAITING_PLAYERS") {
@@ -348,7 +352,7 @@ bot.command("init", async (ctx) => {
 
     const registered = Object.values(players);
 
-    if (registered.length === 0) {
+    if (registered.length === 0 && !justCompletedRoleExtraction) {
       message += "🕰 *Awaiting for players.*\n\n" +
         "📩 Players may now DM `/start` to join.\n\n" +
         `👥 Max players: ${MAX_PLAYERS}`;
