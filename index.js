@@ -11,8 +11,6 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ADMIN_GROUP_ID = process.env.ADMIN_GROUP_ID;
 const PORT = process.env.PORT || 3000;
 
-const ackTimers = new Map();
-
 /* =====================
    FIREBASE INIT
 ===================== */
@@ -21,7 +19,6 @@ admin.initializeApp({
     JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
   )
 });
-
 const db = admin.firestore();
 
 /* =====================
@@ -58,37 +55,26 @@ async function callGroq(systemPrompt, userPrompt) {
 }
 
 /* =====================
-   /start — PLAYER REGISTER / RESUME (DM)
+   /start — PLAYER REGISTER (DM)
 ===================== */
 bot.start(async ctx => {
   if (ctx.chat.type !== "private") return;
 
   const userId = String(ctx.from.id);
-
   const groupSnap = await db.collection("groups").get();
-  if (groupSnap.empty) {
-    return ctx.reply("No world is currently active.");
-  }
+  if (groupSnap.empty) return ctx.reply("No world is currently active.");
 
-  const groupDoc = groupSnap.docs[0];
-  const activeWorldId = groupDoc.data().activeWorldId;
-
-  if (!activeWorldId) {
-    return ctx.reply("No world is currently active.");
-  }
+  const activeWorldId = groupSnap.docs[0].data().activeWorldId;
+  if (!activeWorldId) return ctx.reply("No world is currently active.");
 
   const worldRef = db.collection("worlds").doc(activeWorldId);
   const worldSnap = await worldRef.get();
-
-  if (!worldSnap.exists) {
-    return ctx.reply("The active world no longer exists.");
-  }
+  if (!worldSnap.exists) return ctx.reply("World no longer exists.");
 
   const playerRef = worldRef.collection("players").doc(userId);
   const playerSnap = await playerRef.get();
 
   if (playerSnap.exists) {
-    await playerRef.update({ lastActive: Date.now() });
     return ctx.reply(
       `Welcome back, ${playerSnap.data().character.name}\nWorld: ${worldSnap.data().meta.name}`
     );
@@ -97,19 +83,16 @@ bot.start(async ctx => {
   await db.collection("sessions").doc(`player_${userId}`).set({
     step: "CHARACTER_NAME",
     worldId: activeWorldId,
-    userId,
     createdAt: Date.now()
   });
 
-  return ctx.reply("A new soul approaches.\nWhat is your character name?");
+  ctx.reply("A new soul approaches.\nWhat is your character name?");
 });
 
 /* =====================
    /groupid
 ===================== */
-bot.command("groupid", ctx => {
-  ctx.reply(String(ctx.chat.id));
-});
+bot.command("groupid", ctx => ctx.reply(String(ctx.chat.id)));
 
 /* =====================
    /init — WORLD SELECT
@@ -117,30 +100,26 @@ bot.command("groupid", ctx => {
 bot.command("init", async ctx => {
   if (String(ctx.chat.id) !== String(ADMIN_GROUP_ID)) return;
 
-  const snapshot = await db
+  const snap = await db
     .collection("worlds")
     .where("meta.groupId", "==", String(ctx.chat.id))
     .get();
 
-  if (snapshot.empty) {
+  if (snap.empty) {
     return ctx.reply(
-      "No worlds exist yet.",
+      "No worlds exist.",
       Markup.inlineKeyboard([
         Markup.button.callback("Create New World", "CREATE_WORLD")
       ])
     );
   }
 
-  const buttons = snapshot.docs.map(doc =>
-    Markup.button.callback(doc.data().meta.name, `LOAD_${doc.id}`)
+  const buttons = snap.docs.map(d =>
+    Markup.button.callback(d.data().meta.name, `LOAD_${d.id}`)
   );
-
   buttons.push(Markup.button.callback("Create New World", "CREATE_WORLD"));
 
-  await ctx.reply(
-    "Select a world:",
-    Markup.inlineKeyboard(buttons.map(b => [b]))
-  );
+  ctx.reply("Select a world:", Markup.inlineKeyboard(buttons.map(b => [b])));
 });
 
 /* =====================
@@ -149,20 +128,13 @@ bot.command("init", async ctx => {
 bot.action("CREATE_WORLD", async ctx => {
   await ctx.answerCbQuery();
 
-  const groupId = String(ctx.chat.id);
-  const adminId = String(ctx.from.id);
-
-  await db.collection("sessions").doc(groupId).set({
+  await db.collection("sessions").doc(String(ctx.chat.id)).set({
     step: "WORLD_NAME",
-    adminId,
-    buffer: [],
+    buffer: {},
     createdAt: Date.now()
   });
 
-  await ctx.telegram.sendMessage(
-    groupId,
-    "Send the world name."
-  );
+  ctx.telegram.sendMessage(ctx.chat.id, "Send the world name.");
 });
 
 /* =====================
@@ -171,17 +143,68 @@ bot.action("CREATE_WORLD", async ctx => {
 bot.action(/^LOAD_(.+)/, async ctx => {
   await ctx.answerCbQuery();
 
-  const worldId = ctx.match[1];
   await db.collection("groups").doc(String(ctx.chat.id)).set({
-    activeWorldId: worldId,
+    activeWorldId: ctx.match[1],
     updatedAt: Date.now()
   });
 
-  const world = (await db.collection("worlds").doc(worldId).get()).data();
+  const world = (await db.collection("worlds").doc(ctx.match[1]).get()).data();
+  ctx.reply(`World loaded: ${world.meta.name}\nPlayers may DM /start`);
+});
 
-  await ctx.reply(
-    `World loaded: ${world.meta.name}\nPlayers may DM /start`
-  );
+/* =====================
+   GROUP TEXT HANDLER (WORLD CREATION)
+===================== */
+bot.on("text", async ctx => {
+  if (ctx.chat.type === "private") return;
+
+  const groupId = String(ctx.chat.id);
+  const sessionRef = db.collection("sessions").doc(groupId);
+  const snap = await sessionRef.get();
+  if (!snap.exists) return;
+
+  const session = snap.data();
+  const text = ctx.message.text.trim();
+
+  /* WORLD NAME */
+  if (session.step === "WORLD_NAME") {
+    session.buffer.name = text;
+    session.step = "WORLD_PROMPT";
+    await sessionRef.set(session);
+    return ctx.reply("Send the WORLD PROMPT (lore, rules, setting).");
+  }
+
+  /* WORLD PROMPT */
+  if (session.step === "WORLD_PROMPT") {
+    session.buffer.worldPrompt = text;
+    session.step = "SYSTEM_PROMPT";
+    await sessionRef.set(session);
+    return ctx.reply("Send the SYSTEM PROMPT (rules for the AI narrator).");
+  }
+
+  /* SYSTEM PROMPT → FINALIZE */
+  if (session.step === "SYSTEM_PROMPT") {
+    const worldRef = await db.collection("worlds").add({
+      meta: {
+        name: session.buffer.name,
+        groupId,
+        maxPlayers: 1, // TESTING
+        phase: "PLAYER_JOIN"
+      },
+      prompts: {
+        worldPrompt: session.buffer.worldPrompt,
+        systemPrompt: text
+      },
+      createdAt: Date.now()
+    });
+
+    await db.collection("groups").doc(groupId).set({
+      activeWorldId: worldRef.id
+    });
+
+    await sessionRef.delete();
+    return ctx.reply(`World created: ${session.buffer.name}\nPlayers may DM /start`);
+  }
 });
 
 /* =====================
@@ -191,26 +214,27 @@ async function generateRolesFromWorldPrompt(worldId) {
   const worldRef = db.collection("worlds").doc(worldId);
   const world = (await worldRef.get()).data();
 
-  const response = await callGroq(
+  const raw = await callGroq(
     "You are a game system designer.",
     `
 World Prompt:
 ${world.prompts.worldPrompt}
 
-Extract playable roles only.
-Return JSON:
+Return STRICT JSON array:
 [{ "id": "string", "name": "string", "description": "string" }]
 `
   );
 
-  const roles = JSON.parse(response);
-  if (roles.length !== world.meta.maxPlayers) {
-    throw new Error("Role count mismatch");
+  let roles;
+  try {
+    roles = JSON.parse(raw);
+  } catch {
+    throw new Error("Invalid JSON from Groq");
   }
 
-  for (const role of roles) {
-    await worldRef.collection("roles").doc(role.id).set({
-      ...role,
+  for (const r of roles) {
+    await worldRef.collection("roles").doc(r.id).set({
+      ...r,
       assignedTo: null,
       createdAt: Date.now()
     });
@@ -223,19 +247,14 @@ Return JSON:
    ANNOUNCE ROLE SELECTION
 ===================== */
 async function announceRoleSelection(worldId, groupId) {
-  const rolesSnap = await db
-    .collection("worlds")
-    .doc(worldId)
-    .collection("roles")
-    .get();
-
-  const buttons = rolesSnap.docs.map(doc =>
-    Markup.button.callback(doc.data().name, `ROLE_${doc.id}`)
+  const snap = await db.collection("worlds").doc(worldId).collection("roles").get();
+  const buttons = snap.docs.map(d =>
+    Markup.button.callback(d.data().name, `ROLE_${d.id}`)
   );
 
-  await bot.telegram.sendMessage(
+  bot.telegram.sendMessage(
     groupId,
-    "Role selection phase. Choose one role.",
+    "Role selection phase.",
     Markup.inlineKeyboard(buttons.map(b => [b]))
   );
 }
@@ -246,31 +265,25 @@ async function announceRoleSelection(worldId, groupId) {
 bot.action(/^ROLE_(.+)/, async ctx => {
   await ctx.answerCbQuery();
 
-  const roleId = ctx.match[1];
-  const userId = String(ctx.from.id);
   const groupId = String(ctx.chat.id);
-
+  const userId = String(ctx.from.id);
   const worldId = (await db.collection("groups").doc(groupId).get()).data().activeWorldId;
-  const worldRef = db.collection("worlds").doc(worldId);
 
-  const roleRef = worldRef.collection("roles").doc(roleId);
+  const roleRef = db.collection("worlds").doc(worldId).collection("roles").doc(ctx.match[1]);
   const role = (await roleRef.get()).data();
 
   if (role.assignedTo) return ctx.reply("Role already taken.");
 
   await roleRef.update({ assignedTo: userId });
-  await worldRef.collection("players").doc(userId).update({
-    "character.role": { id: roleId, name: role.name }
+  await db.collection("worlds").doc(worldId).collection("players").doc(userId).update({
+    "character.role": { id: ctx.match[1], name: role.name }
   });
 
-  await ctx.telegram.sendMessage(
-    groupId,
-    `Role locked: ${role.name}`
-  );
+  ctx.reply(`Role locked: ${role.name}`);
 });
 
 /* =====================
-   DM CHARACTER NAME HANDLER
+   PLAYER NAME HANDLER (DM)
 ===================== */
 bot.on("text", async ctx => {
   if (ctx.chat.type !== "private") return;
@@ -279,38 +292,26 @@ bot.on("text", async ctx => {
   const text = ctx.message.text.trim();
 
   const sessionRef = db.collection("sessions").doc(`player_${userId}`);
-  const sessionSnap = await sessionRef.get();
-  if (!sessionSnap.exists) return;
+  const snap = await sessionRef.get();
+  if (!snap.exists || snap.data().step !== "CHARACTER_NAME") return;
 
-  const session = sessionSnap.data();
-  if (session.step !== "CHARACTER_NAME") return;
-
-  const worldRef = db.collection("worlds").doc(session.worldId);
+  const worldRef = db.collection("worlds").doc(snap.data().worldId);
   const world = (await worldRef.get()).data();
 
   await worldRef.collection("players").doc(userId).set({
-    userId,
     character: { name: text },
-    stats: {
-      skillEssence: { current: 100, max: 100, regenPerTurn: 20 }
-    },
     createdAt: Date.now()
   });
 
-  const playersCount = (await worldRef.collection("players").get()).size;
+  const count = (await worldRef.collection("players").get()).size;
 
-  await bot.telegram.sendMessage(
-    world.meta.groupId,
-    `Player joined: ${text} (${playersCount}/${world.meta.maxPlayers})`
-  );
-
-  if (playersCount === world.meta.maxPlayers && world.meta.phase !== "ROLE_SELECTION") {
-    await generateRolesFromWorldPrompt(session.worldId);
-    await announceRoleSelection(session.worldId, world.meta.groupId);
+  if (count === world.meta.maxPlayers && world.meta.phase !== "ROLE_SELECTION") {
+    await generateRolesFromWorldPrompt(snap.data().worldId);
+    await announceRoleSelection(snap.data().worldId, world.meta.groupId);
   }
 
   await sessionRef.delete();
-  return ctx.reply(`Welcome, ${text}`);
+  ctx.reply(`Welcome, ${text}`);
 });
 
 /* =====================
@@ -324,6 +325,4 @@ app.post("/webhook", (req, res) => {
 /* =====================
    SERVER
 ===================== */
-app.listen(PORT, () => {
-  console.log("Bot running");
-});
+app.listen(PORT, () => console.log("Bot running"));
