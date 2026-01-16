@@ -326,23 +326,33 @@ bot.on("text", async (ctx) => {
   const chatId = ctx.chat.id;
   const text = ctx.message.text;
 
+  // Skip commands
+  if (text.startsWith("/")) return;
+
   // Handle group messages during setup
   if (chatId === ADMIN_GROUP_ID) {
-    if (text.startsWith("/")) return; // Skip commands
-
     const world = await getWorld();
     if (!world) return;
 
     const status = world.status;
 
     if (["AWAITING_WORLD_PROMPT", "AWAITING_SYSTEM_PROMPT", "AWAITING_ROLE_PROMPT"].includes(status)) {
-      const userId = ctx.from.id;
+      // Store as group-level, not user-level
+      const key = "admin_prompt";
 
-      if (!pendingPrompts.has(userId)) {
-        pendingPrompts.set(userId, { type: status, parts: [] });
+      if (!pendingPrompts.has(key)) {
+        pendingPrompts.set(key, { type: status, parts: [] });
       }
 
-      const pending = pendingPrompts.get(userId);
+      const pending = pendingPrompts.get(key);
+
+      // Verify we're still collecting the same type
+      if (pending.type !== status) {
+        // Reset if status changed
+        pending.type = status;
+        pending.parts = [];
+      }
+
       pending.parts.push(text);
 
       // Only acknowledge first message to avoid spam
@@ -371,8 +381,8 @@ bot.command("done", async (ctx) => {
     return;
   }
 
-  const userId = ctx.from.id;
-  const pending = pendingPrompts.get(userId);
+  const key = "admin_prompt";
+  const pending = pendingPrompts.get(key);
 
   if (!pending || pending.parts.length === 0) {
     await ctx.reply("❌ No prompt data received. Please send your prompt first.");
@@ -380,9 +390,15 @@ bot.command("done", async (ctx) => {
   }
 
   const combinedPrompt = pending.parts.join("\n\n");
-  pendingPrompts.delete(userId);
-
   const status = world.status;
+
+  // Verify we're processing the right prompt type
+  if (pending.type !== status) {
+    await ctx.reply(`❌ Status mismatch. Expected ${status} but got ${pending.type}. Please try again.`);
+    return;
+  }
+
+  pendingPrompts.delete(key);
 
   switch (status) {
     case "AWAITING_WORLD_PROMPT":
@@ -454,7 +470,7 @@ bot.command("done", async (ctx) => {
     default:
       await ctx.reply("❌ /done can only be used during setup phase.");
   }
-});
+})
 
 /* =====================
    PLAYER JOIN (/start)
@@ -954,7 +970,43 @@ bot.command("status", async (ctx) => {
 ===================== */
 bot.catch((err, ctx) => {
   console.error("Bot error:", err);
+  console.error("Context:", {
+    chat: ctx.chat?.id,
+    from: ctx.from?.id,
+    message: ctx.message?.text
+  });
   ctx.reply("❌ An error occurred. Please try again or contact administrator.");
+});
+
+/* =====================
+   DEBUG COMMAND (Remove in production)
+===================== */
+bot.command("debug", async (ctx) => {
+  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
+
+  const world = await getWorld();
+  const key = "admin_prompt";
+  const pending = pendingPrompts.get(key);
+
+  let msg = "🔍 *DEBUG INFO*\n\n";
+  msg += `World exists: ${world ? "Yes" : "No"}\n`;
+
+  if (world) {
+    msg += `Status: ${world.status}\n`;
+    msg += `World prompt length: ${world.setup?.worldPrompt?.length || 0}\n`;
+    msg += `System prompt length: ${world.setup?.systemPrompt?.length || 0}\n`;
+    msg += `Role prompt length: ${world.setup?.rolePrompt?.length || 0}\n`;
+  }
+
+  msg += `\nPending prompt: ${pending ? "Yes" : "No"}\n`;
+
+  if (pending) {
+    msg += `Pending type: ${pending.type}\n`;
+    msg += `Pending parts: ${pending.parts.length}\n`;
+    msg += `Total length: ${pending.parts.join("").length}\n`;
+  }
+
+  await ctx.reply(msg, { parse_mode: "Markdown" });
 });
 
 /* =====================
