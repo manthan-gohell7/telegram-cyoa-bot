@@ -1,14 +1,11 @@
 import express from "express";
-import { Telegraf, Markup } from "telegraf";
-import axios from "axios";
+import { Telegraf } from "telegraf";
 import admin from "firebase-admin";
-import { session } from "telegraf";
 
 /* =====================
    ENV
 ===================== */
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ADMIN_GROUP_ID = Number(process.env.ADMIN_GROUP_ID);
 const PORT = process.env.PORT || 3000;
 
@@ -28,153 +25,152 @@ const WORLD_REF = db.collection("world").doc("main");
    BOT
 ===================== */
 const bot = new Telegraf(BOT_TOKEN);
-
-bot.use(session());
-
 const app = express();
 app.use(express.json());
 
 /* =====================
-   HELPERS
-===================== */
-function splitMessage(text, limit = 3800) {
-  const chunks = [];
-  let current = "";
-  for (const line of text.split("\n")) {
-    if ((current + line).length > limit) {
-      chunks.push(current);
-      current = "";
-    }
-    current += line + "\n";
-  }
-  if (current) chunks.push(current);
-  return chunks;
-}
-
-async function callGroq(system, user) {
-  const res = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.7,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user }
-      ]
-    },
-    { headers: { Authorization: `Bearer ${GROQ_API_KEY}` } }
-  );
-  return res.data.choices[0].message.content;
-}
-
-/* =====================
-   /INIT (GROUP)
+   /INIT – GROUP
 ===================== */
 bot.command("init", async (ctx) => {
   if (ctx.chat.id !== ADMIN_GROUP_ID) return;
 
   const snap = await WORLD_REF.get();
-  if (!snap.exists) {
-    await WORLD_REF.set({
-      status: "INIT",
-      setup: { completedSteps: [] },
-      players: {},
-      rolesTaken: [],
-      phase: { number: 0 }
-    });
-  }
-
-  const world = (await WORLD_REF.get()).data();
-  const done = world.setup.completedSteps;
-
-  let next;
-  if (!done.includes("world")) next = "WORLD";
-  else if (!done.includes("system")) next = "SYSTEM";
-  else if (!done.includes("roles")) next = "ROLES";
-  else {
-    await ctx.reply("✅ World already initialized. Waiting for players.");
+  if (snap.exists) {
+    await ctx.reply("⚠️ World already initialized.");
     return;
   }
+
+  await WORLD_REF.set({
+    status: "SETUP",
+    setup: {
+      worldPrompt: "",
+      systemPrompt: "",
+      rolePrompt: ""
+    },
+    roles: [],
+    rolesTaken: [],
+    players: {}
+  });
 
   await ctx.reply(
-    `🛠 Setup step: *${next}*\nSend prompt messages.\nType /done when finished.`,
-    { parse_mode: "Markdown" }
+    "✅ World initialized.\n\n" +
+    "✏️ Please manually populate the following fields in Firestore:\n" +
+    "• setup.worldPrompt\n" +
+    "• setup.systemPrompt\n" +
+    "• setup.rolePrompt\n\n" +
+    "📢 Send /done when ready."
   );
-
-  ctx.session = { collecting: next, buffer: "" };
 });
 
 /* =====================
-   PROMPT COLLECTION
+   /DONE – READ ROLES
 ===================== */
-bot.on("text", async (ctx) => {
+bot.command("done", async (ctx) => {
+  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
 
-  /* =====================
-     GROUP – SETUP PROMPTS
-  ===================== */
-  if (ctx.chat.id === ADMIN_GROUP_ID && ctx.session?.collecting) {
-
-    if (ctx.message.text === "/done") {
-      const step = ctx.session.collecting.toLowerCase();
-
-      await WORLD_REF.update({
-        [`setup.${step}Prompt`]: ctx.session.buffer,
-        "setup.completedSteps": admin.firestore.FieldValue.arrayUnion(step)
-      });
-
-      ctx.session = null;
-
-      await ctx.reply(`✅ ${step} prompt saved.`);
-      return;
-    }
-
-    ctx.session.buffer += ctx.message.text + "\n";
+  const snap = await WORLD_REF.get();
+  if (!snap.exists) {
+    await ctx.reply("❌ World not initialized. Use /init first.");
     return;
   }
 
-  /* =====================
-     DM – PLAYER FLOW
-  ===================== */
-  if (ctx.chat.type === "private" && ctx.session?.state === "NAME") {
-    const name = ctx.message.text.trim();
-    const snap = await WORLD_REF.get();
-    const world = snap.data();
-    const players = world.players || {};
+  const world = snap.data();
+  const rolePrompt = world.setup.rolePrompt;
 
-    if (Object.values(players).some(p => p.characterName === name)) {
-      await ctx.reply("❌ Name already taken. Choose another.");
-      return;
-    }
+  if (!rolePrompt || rolePrompt.trim() === "") {
+    await ctx.reply("❌ rolePrompt is empty in Firestore.");
+    return;
+  }
 
-    players[ctx.from.id] = {
-      tgName: ctx.from.username || ctx.from.first_name,
-      characterName: name,
-      ready: false
-    };
-
-    await WORLD_REF.update({ players });
-
-    await bot.telegram.sendMessage(
-      ADMIN_GROUP_ID,
-      `🧍 ${ctx.from.first_name} → *${name}*`,
-      { parse_mode: "Markdown" }
+  // Extract roles: "1. THE HUNTER (HUMAN)"
+  const roles = rolePrompt
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => /^\d+\.\s/.test(line))
+    .map(line =>
+      line
+        .replace(/^\d+\.\s*/, "")
+        .split("(")[0]
+        .trim()
     );
 
-    ctx.session = { state: "ROLE" };
-    await ctx.reply("✅ Name registered. Role selection coming soon.");
+  if (roles.length === 0) {
+    await ctx.reply("❌ No roles detected. Check rolePrompt format.");
     return;
   }
+
+  await WORLD_REF.update({
+    roles,
+    status: "WAITING_PLAYERS"
+  });
+
+  let msg = "🎭 *AVAILABLE ROLES*\n\n";
+  roles.forEach((r, i) => {
+    msg += `${i + 1}. ${r}\n`;
+  });
+
+  msg += "\n📩 Players can now DM `/start` to join.";
+
+  await ctx.reply(msg, { parse_mode: "Markdown" });
 });
 
 /* =====================
-   /START (DM)
+   /START – PLAYER DM
 ===================== */
 bot.start(async (ctx) => {
   if (ctx.chat.type !== "private") return;
 
-  await ctx.reply("Enter your character name:");
-  ctx.session = { state: "NAME" };
+  const snap = await WORLD_REF.get();
+  if (!snap.exists) {
+    await ctx.reply("❌ Game not initialized.");
+    return;
+  }
+
+  const world = snap.data();
+  if (world.status !== "WAITING_PLAYERS") {
+    await ctx.reply("⏳ Game not ready yet.");
+    return;
+  }
+
+  await ctx.reply("📝 Enter your character name:");
+  ctx.state.awaitingName = true;
 });
+
+/* =====================
+   PLAYER NAME INPUT
+===================== */
+bot.on("text", async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+  if (!ctx.state.awaitingName) return;
+
+  const name = ctx.message.text.trim();
+  const snap = await WORLD_REF.get();
+  const world = snap.data();
+  const players = world.players || {};
+
+  if (Object.values(players).some(p => p.characterName === name)) {
+    await ctx.reply("❌ Name already taken. Choose another.");
+    return;
+  }
+
+  players[ctx.from.id] = {
+    tgName: ctx.from.username || ctx.from.first_name,
+    characterName: name,
+    role: null
+  };
+
+  await WORLD_REF.update({ players });
+
+  await bot.telegram.sendMessage(
+    ADMIN_GROUP_ID,
+    `🧍 ${ctx.from.first_name} → *${name}*`,
+    { parse_mode: "Markdown" }
+  );
+
+  ctx.state.awaitingName = false;
+  await ctx.reply("✅ Name registered.\nRole selection will begin soon.");
+});
+
 /* =====================
    SERVER
 ===================== */
