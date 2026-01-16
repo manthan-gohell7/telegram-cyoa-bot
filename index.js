@@ -58,6 +58,75 @@ async function callGroq(systemPrompt, userPrompt) {
 }
 
 /* =====================
+   /start — PLAYER REGISTER / RESUME (DM)
+===================== */
+bot.start(async ctx => {
+  if (ctx.chat.type !== "private") return;
+
+  const userId = String(ctx.from.id);
+
+  // 🔍 Find which group this user belongs to
+  // (For now we assume ONE group → later we can extend)
+  const groupSnap = await db.collection("groups").get();
+
+  if (groupSnap.empty) {
+    return ctx.reply("🌫️ No world is currently active.");
+  }
+
+  // Take the first active group (current design)
+  const groupDoc = groupSnap.docs[0];
+  const groupId = groupDoc.id;
+  const activeWorldId = groupDoc.data().activeWorldId;
+
+  if (!activeWorldId) {
+    return ctx.reply("🌫️ No world is currently active.");
+  }
+
+  const worldRef = db.collection("worlds").doc(activeWorldId);
+  const worldSnap = await worldRef.get();
+
+  if (!worldSnap.exists) {
+    return ctx.reply("❌ The active world no longer exists.");
+  }
+
+  const playerRef = worldRef.collection("players").doc(userId);
+  const playerSnap = await playerRef.get();
+
+  /* =====================
+     PLAYER EXISTS → RESUME
+  ===================== */
+  if (playerSnap.exists) {
+    const player = playerSnap.data();
+
+    await playerRef.update({
+      lastActive: Date.now()
+    });
+
+    return ctx.reply(
+      `🧭 Welcome back, ${player.character.name}.\n\n` +
+      `🌍 World: ${worldSnap.data().meta.name}\n` +
+      `📜 Your journey continues…`,
+      { parse_mode: "Markdown" }
+    );
+  }
+
+  /* =====================
+     NEW PLAYER → ASK NAME
+  ===================== */
+  await db.collection("sessions").doc(`player_${userId}`).set({
+    step: "CHARACTER_NAME",
+    worldId: activeWorldId,
+    userId,
+    createdAt: Date.now()
+  });
+
+  return ctx.reply(
+    "✨ A new soul approaches this world.\n\n" +
+    "What is your character name?"
+  );
+});
+
+/* =====================
    /groupid (DEBUG)
 ===================== */
 bot.command("groupid", ctx => {
@@ -144,7 +213,7 @@ bot.action("CREATE_WORLD", async ctx => {
 
   await ctx.telegram.sendMessage(
     groupId,
-    "🌍 **WORLD NAME**\n\nSend the name of this world.",
+    "🌍 WORLD NAME\n\nSend the name of this world.",
     { parse_mode: "Markdown" }
   );
 });
@@ -172,8 +241,8 @@ bot.action(/^LOAD_(.+)/, async ctx => {
   const world = worldSnap.data();
 
   await ctx.reply(
-    `🌍 **World Loaded**\n\n` +
-    `Name: **${world.meta.name}**\n` +
+    `🌍 World Loaded\n\n` +
+    `Name: ${world.meta.name}\n` +
     `Players may now DM /start`,
     { parse_mode: "Markdown" }
   );
@@ -235,10 +304,9 @@ bot.on("text", async ctx => {
 
 
     return ctx.reply(
-      "🌏 **WORLD BUILDING PROMPT**\n\n" +
+      "🌏 WORLD BUILDING PROMPT\n\n" +
       "Send the lore, history, factions, and power systems.\n" +
-      "You may send multiple messages.\n" +
-      "Send /done when finished.",
+      "You may send multiple messages.",
       { parse_mode: "Markdown" }
     );
   }
@@ -274,7 +342,7 @@ bot.on("text", async ctx => {
       });
 
       return ctx.reply(
-        "🧠 **SYSTEM PROMPT**\n\n" +
+        "🧠 SYSTEM PROMPT\n\n" +
         "Send the system prompt in one or more messages.\n" +
         { parse_mode: "Markdown" }
       );
@@ -358,9 +426,9 @@ bot.on("text", async ctx => {
       await sessionRef.delete();
 
       return ctx.reply(
-        `✅ **World Created Successfully**\n\n` +
-        `🌍 ID: \`${worldId}\`\n` +
-        `📌 Bound to this group\n\n` +
+        `✅ World Created Successfully\n\n` +
+        `🌍 Name: \`${session.worldName}\`\n` +
+        `📌 Currently active in this group\n\n` +
         `Players may now DM /start`,
         { parse_mode: "Markdown" }
       );
