@@ -29,6 +29,12 @@ const app = express();
 app.use(express.json());
 
 /* =====================
+   PROMPT ACK CONTROL
+===================== */
+const PROMPT_ACK_DELAY = 1500;
+const promptAckTimers = new Map();
+
+/* =====================
    GROQ CALL
 ===================== */
 async function callGroq(systemPrompt, userPrompt) {
@@ -123,6 +129,49 @@ bot.command("init", async ctx => {
 });
 
 /* =====================
+   /done — PROMPT FINALIZER
+===================== */
+bot.command("done", async ctx => {
+  if (ctx.chat.type === "private") return;
+
+  const groupId = String(ctx.chat.id);
+  const sessionRef = db.collection("sessions").doc(groupId);
+  const snap = await sessionRef.get();
+  if (!snap.exists) return;
+
+  const session = snap.data();
+
+  if (session.step === "WORLD_PROMPT") {
+    session.step = "SYSTEM_PROMPT";
+    await sessionRef.set(session);
+    return ctx.reply("World prompt saved. Now send SYSTEM PROMPT. Use /done when finished.");
+  }
+
+  if (session.step === "SYSTEM_PROMPT") {
+    const worldRef = await db.collection("worlds").add({
+      meta: {
+        name: session.buffer.name,
+        groupId,
+        maxPlayers: 1,
+        phase: "PLAYER_JOIN"
+      },
+      prompts: {
+        worldPrompt: session.buffer.worldPrompt.join("\n"),
+        systemPrompt: session.buffer.systemPrompt.join("\n")
+      },
+      createdAt: Date.now()
+    });
+
+    await db.collection("groups").doc(groupId).set({
+      activeWorldId: worldRef.id
+    });
+
+    await sessionRef.delete();
+    return ctx.reply("World created successfully. Players may DM /start");
+  }
+});
+
+/* =====================
    CREATE WORLD
 ===================== */
 bot.action("CREATE_WORLD", async ctx => {
@@ -130,7 +179,10 @@ bot.action("CREATE_WORLD", async ctx => {
 
   await db.collection("sessions").doc(String(ctx.chat.id)).set({
     step: "WORLD_NAME",
-    buffer: {},
+    buffer: {
+      worldPrompt: [],
+      systemPrompt: []
+    },
     createdAt: Date.now()
   });
 
@@ -153,58 +205,87 @@ bot.action(/^LOAD_(.+)/, async ctx => {
 });
 
 /* =====================
+   PROMPT ACK HELPER
+===================== */
+function acknowledgePromptChunk(ctx, groupId) {
+  if (promptAckTimers.has(groupId)) return;
+
+  const timer = setTimeout(() => {
+    ctx.reply("Noted. Continue or send /done");
+    promptAckTimers.delete(groupId);
+  }, PROMPT_ACK_DELAY);
+
+  promptAckTimers.set(groupId, timer);
+}
+
+/* =====================
    GROUP TEXT HANDLER (WORLD CREATION)
 ===================== */
 bot.on("text", async ctx => {
   if (ctx.chat.type === "private") return;
 
   const groupId = String(ctx.chat.id);
+  const text = ctx.message.text;
   const sessionRef = db.collection("sessions").doc(groupId);
   const snap = await sessionRef.get();
   if (!snap.exists) return;
 
   const session = snap.data();
-  const text = ctx.message.text.trim();
 
-  /* WORLD NAME */
   if (session.step === "WORLD_NAME") {
-    session.buffer.name = text;
+    session.buffer.name = text.trim();
     session.step = "WORLD_PROMPT";
     await sessionRef.set(session);
-    return ctx.reply("Send the WORLD PROMPT (lore, rules, setting).");
+    return ctx.reply(
+      "Send WORLD PROMPT. You can send multiple messages. Use /done when finished."
+    );
   }
 
-  /* WORLD PROMPT */
   if (session.step === "WORLD_PROMPT") {
-    session.buffer.worldPrompt = text;
-    session.step = "SYSTEM_PROMPT";
+    session.buffer.worldPrompt.push(text);
     await sessionRef.set(session);
-    return ctx.reply("Send the SYSTEM PROMPT (rules for the AI narrator).");
+    acknowledgePromptChunk(ctx, groupId);
+    return;
   }
 
-  /* SYSTEM PROMPT → FINALIZE */
   if (session.step === "SYSTEM_PROMPT") {
-    const worldRef = await db.collection("worlds").add({
-      meta: {
-        name: session.buffer.name,
-        groupId,
-        maxPlayers: 1, // TESTING
-        phase: "PLAYER_JOIN"
-      },
-      prompts: {
-        worldPrompt: session.buffer.worldPrompt,
-        systemPrompt: text
-      },
-      createdAt: Date.now()
-    });
-
-    await db.collection("groups").doc(groupId).set({
-      activeWorldId: worldRef.id
-    });
-
-    await sessionRef.delete();
-    return ctx.reply(`World created: ${session.buffer.name}\nPlayers may DM /start`);
+    session.buffer.systemPrompt.push(text);
+    await sessionRef.set(session);
+    acknowledgePromptChunk(ctx, groupId);
+    return;
   }
+});
+
+/* =====================
+   PLAYER NAME HANDLER (DM)
+===================== */
+bot.on("text", async ctx => {
+  if (ctx.chat.type !== "private") return;
+
+  const userId = String(ctx.from.id);
+  const text = ctx.message.text.trim();
+
+  const sessionRef = db.collection("sessions").doc(`player_${userId}`);
+  const snap = await sessionRef.get();
+  if (!snap.exists || snap.data().step !== "CHARACTER_NAME") return;
+
+  const worldRef = db.collection("worlds").doc(snap.data().worldId);
+  const world = (await worldRef.get()).data();
+
+  await worldRef.collection("players").doc(userId).set({
+    character: { name: text },
+    createdAt: Date.now()
+  });
+
+  const count = (await worldRef.collection("players").get()).size;
+
+  if (count === world.meta.maxPlayers && world.meta.phase !== "ROLE_SELECTION") {
+    await generateRolesFromWorldPrompt(snap.data().worldId);
+    await announceRoleSelection(snap.data().worldId, world.meta.groupId);
+  }
+
+  await sessionRef.delete();
+  ctx.reply(`Welcome, ${text}`);
 });
 
 /* =====================
@@ -280,38 +361,6 @@ bot.action(/^ROLE_(.+)/, async ctx => {
   });
 
   ctx.reply(`Role locked: ${role.name}`);
-});
-
-/* =====================
-   PLAYER NAME HANDLER (DM)
-===================== */
-bot.on("text", async ctx => {
-  if (ctx.chat.type !== "private") return;
-
-  const userId = String(ctx.from.id);
-  const text = ctx.message.text.trim();
-
-  const sessionRef = db.collection("sessions").doc(`player_${userId}`);
-  const snap = await sessionRef.get();
-  if (!snap.exists || snap.data().step !== "CHARACTER_NAME") return;
-
-  const worldRef = db.collection("worlds").doc(snap.data().worldId);
-  const world = (await worldRef.get()).data();
-
-  await worldRef.collection("players").doc(userId).set({
-    character: { name: text },
-    createdAt: Date.now()
-  });
-
-  const count = (await worldRef.collection("players").get()).size;
-
-  if (count === world.meta.maxPlayers && world.meta.phase !== "ROLE_SELECTION") {
-    await generateRolesFromWorldPrompt(snap.data().worldId);
-    await announceRoleSelection(snap.data().worldId, world.meta.groupId);
-  }
-
-  await sessionRef.delete();
-  ctx.reply(`Welcome, ${text}`);
 });
 
 /* =====================
