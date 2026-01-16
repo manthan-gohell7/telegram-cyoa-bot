@@ -1,6 +1,7 @@
 import express from "express";
 import { Telegraf } from "telegraf";
 import admin from "firebase-admin";
+import axios from "axios";
 
 /* =====================
    ENV
@@ -8,6 +9,7 @@ import admin from "firebase-admin";
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_GROUP_ID = Number(process.env.ADMIN_GROUP_ID);
 const PORT = process.env.PORT || 3000;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 /* =====================
    FIREBASE
@@ -34,6 +36,142 @@ app.use(express.json());
 const awaitingName = new Set();
 
 const MAX_PLAYERS = 1; // testing
+
+async function callGroq(systemPrompt, userPrompt) {
+  const res = await axios.post(
+    "https://api.groq.com/openai/v1/chat/completions",
+    {
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.85,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  return res.data.choices[0].message.content;
+}
+
+function buildGroupNarrationPrompt(worldPrompt, worldState) {
+  return `
+WORLD LORE:
+${worldPrompt}
+
+CURRENT WORLD STATE:
+${worldState || "The story is just beginning."}
+
+TASK:
+Write a novel-quality third-person world narration.
+
+RULES:
+- Describe only events visible in the world
+- Do NOT reveal player thoughts
+- Do NOT mention choices
+- Do NOT reveal hidden information
+- Tone: dark fantasy, serious, immersive
+- Length: 2–4 paragraphs
+`;
+}
+
+function buildPersonalNarrationPrompt(
+  worldPrompt,
+  rolePrompt,
+  characterName,
+  roleName,
+  worldState
+) {
+  return `
+WORLD LORE:
+${worldPrompt}
+
+CHARACTER ROLE:
+${rolePrompt}
+
+CURRENT WORLD STATE:
+${worldState || "The story is just beginning."}
+
+TASK:
+Write a first-person or close third-person narration for:
+Character Name: ${characterName}
+Role: ${roleName}
+
+RULES:
+- Include inner thoughts, instincts, private perception
+- Do NOT describe other players’ inner states
+- End with EXACTLY THREE choices, labeled:
+A)
+B)
+C)
+- Choices must be distinct and meaningful
+- Tone: novel-level dark fantasy
+`;
+}
+
+async function checkAndStartGame(bot) {
+  const snap = await WORLD_REF.get();
+  if (!snap.exists) return;
+
+  const world = snap.data();
+  if (world.status !== "ROLE_SELECTION") return;
+
+  const players = world.players || {};
+  const allSelected = Object.values(players).every(p => p.role);
+
+  if (!allSelected) return;
+
+  // 🔥 PREVENT DOUBLE START
+  await WORLD_REF.update({
+    status: "RUNNING",
+    worldState: "Initial convergence of fate.",
+    phase: {
+      number: 1,
+      waitingForChoices: true,
+      choices: {}
+    }
+  });
+
+  /* =====================
+     GROUP NARRATION
+  ===================== */
+  const groupText = await callGroq(
+    world.setup.systemPrompt,
+    buildGroupNarrationPrompt(
+      world.setup.worldPrompt,
+      world.worldState
+    )
+  );
+
+
+  await bot.telegram.sendMessage(
+    ADMIN_GROUP_ID,
+    groupText
+  );
+
+  /* =====================
+     PERSONAL NARRATION
+  ===================== */
+  for (const [playerId, player] of Object.entries(players)) {
+    const personalText = await callGroq(
+      world.setup.systemPrompt,
+      buildPersonalNarrationPrompt(
+        world.setup.worldPrompt,
+        world.setup.rolePrompt,
+        player.characterName,
+        player.role,
+        world.worldState
+      )
+    );
+
+    await bot.telegram.sendMessage(playerId, personalText);
+  }
+}
 
 async function checkAndStartRoleSelection(bot) {
   const snap = await WORLD_REF.get();
@@ -223,8 +361,10 @@ bot.command("done", async (ctx) => {
 
   await WORLD_REF.update({
     roles,
+    rolesTaken: [], // 🔥 ADD THIS
     status: "WAITING_PLAYERS"
   });
+
 
   await ctx.reply(
     "🕰 *World is ready.*\n\n" +
@@ -347,23 +487,7 @@ bot.on("text", async (ctx) => {
     "Please wait for other players."
   );
 
-  /* ALL PLAYERS JOINED → SHOW ROLES */
-  if (joinedCount === MAX_PLAYERS) {
-    await WORLD_REF.update({ status: "ROLE_SELECTION" });
-
-    let msg = "🎭 *ROLE SELECTION*\n\n";
-    world.roles.forEach((r, i) => {
-      msg += `${i + 1}. ${r}\n`;
-    });
-
-    msg += "\n📩 Roles will be selected in DM.";
-
-    await bot.telegram.sendMessage(
-      ADMIN_GROUP_ID,
-      msg,
-      { parse_mode: "Markdown" }
-    );
-  }
+  await checkAndStartRoleSelection(bot);
 });
 
 bot.on("callback_query", async (ctx) => {
@@ -422,6 +546,8 @@ bot.on("callback_query", async (ctx) => {
       `🎭 *${characterName}* has chosen *${chosenRole}*`,
       { parse_mode: "Markdown" }
     );
+
+    await checkAndStartGame(bot);
 
   } catch (err) {
     await ctx.answerCbQuery(err.message, { show_alert: true });
