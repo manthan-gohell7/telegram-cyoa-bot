@@ -77,13 +77,22 @@ bot.command("init", async (ctx) => {
       );
       break;
 
-    case "WAITING_PLAYERS":
+    case "WAITING_PLAYERS": {
+      const players = Object.values(world.players || {});
+      const list = players.length
+        ? players.map(p => `• ${p.characterName}`).join("\n")
+        : "_No players yet_";
+
       await ctx.reply(
         "🕰 *World is ready.*\n\n" +
-        "📩 Players may DM `/start` to join.",
+        "👥 Registered players:\n" +
+        list + "\n\n" +
+        "📩 Others may DM `/start` to join.",
         { parse_mode: "Markdown" }
       );
       break;
+    }
+
 
     case "ROLE_SELECTION":
       await ctx.reply(
@@ -158,15 +167,51 @@ bot.start(async (ctx) => {
   }
 
   const world = snap.data();
+  const players = world.players || {};
+  const playerId = String(ctx.from.id);
 
-  if (world.status !== "WAITING_PLAYERS") {
-    await ctx.reply("⏳ Player registration closed.");
+  /* =====================
+     CASE 1: PLAYER ALREADY REGISTERED
+  ===================== */
+  if (players[playerId]) {
+    if (world.status === "ROLE_SELECTION" && !players[playerId].role) {
+      await ctx.reply(
+        "🎭 *Role selection is in progress.*\n" +
+        "Please select your role when prompted.",
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    await ctx.reply(
+      "✅ You are already registered.\n" +
+      "Please wait for the game to proceed."
+    );
     return;
   }
 
-  const currentPlayers = Object.keys(world.players || {}).length;
-  if (currentPlayers >= MAX_PLAYERS) {
-    await ctx.reply("🚫 Player limit reached.");
+  /* =====================
+     CASE 2: NEW PLAYER, CHECK LIMIT
+  ===================== */
+  if (Object.keys(players).length >= MAX_PLAYERS) {
+    const registeredList = Object.values(players)
+      .map(p => `• ${p.characterName}`)
+      .join("\n");
+
+    await ctx.reply(
+      "🚫 *Player limit reached.*\n\n" +
+      "Registered players:\n" +
+      registeredList,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  /* =====================
+     CASE 3: ACCEPT NEW PLAYER
+  ===================== */
+  if (world.status !== "WAITING_PLAYERS") {
+    await ctx.reply("⏳ Player registration closed.");
     return;
   }
 
@@ -174,7 +219,6 @@ bot.start(async (ctx) => {
 
   await ctx.reply(
     "🌍 *Welcome to the world.*\n\n" +
-    "You are about to enter a story shaped by will and consequence.\n\n" +
     "📝 Enter your character name:",
     { parse_mode: "Markdown" }
   );
