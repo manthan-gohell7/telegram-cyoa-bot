@@ -219,13 +219,46 @@ function acknowledgePromptChunk(ctx, groupId) {
 }
 
 /* =====================
-   GROUP TEXT HANDLER (WORLD CREATION)
+   TEXT HANDLER (GROUP + DM)
 ===================== */
 bot.on("text", async ctx => {
-  if (ctx.chat.type === "private") return;
-
-  const groupId = String(ctx.chat.id);
   const text = ctx.message.text;
+
+  /* =====================
+     PRIVATE CHAT (PLAYER)
+  ===================== */
+  if (ctx.chat.type === "private") {
+    const userId = String(ctx.from.id);
+    const sessionRef = db.collection("sessions").doc(`player_${userId}`);
+    const snap = await sessionRef.get();
+    if (!snap.exists) return;
+
+    const session = snap.data();
+    if (session.step !== "CHARACTER_NAME") return;
+
+    const worldRef = db.collection("worlds").doc(session.worldId);
+    const world = (await worldRef.get()).data();
+
+    await worldRef.collection("players").doc(userId).set({
+      character: { name: text.trim() },
+      createdAt: Date.now()
+    });
+
+    const count = (await worldRef.collection("players").get()).size;
+
+    if (count === world.meta.maxPlayers && world.meta.phase !== "ROLE_SELECTION") {
+      await generateRolesFromWorldPrompt(session.worldId);
+      await announceRoleSelection(session.worldId, world.meta.groupId);
+    }
+
+    await sessionRef.delete();
+    return ctx.reply(`Welcome, ${text.trim()}`);
+  }
+
+  /* =====================
+     GROUP CHAT (WORLD CREATION)
+  ===================== */
+  const groupId = String(ctx.chat.id);
   const sessionRef = db.collection("sessions").doc(groupId);
   const snap = await sessionRef.get();
   if (!snap.exists) return;
@@ -254,38 +287,6 @@ bot.on("text", async ctx => {
     acknowledgePromptChunk(ctx, groupId);
     return;
   }
-});
-
-/* =====================
-   PLAYER NAME HANDLER (DM)
-===================== */
-bot.on("text", async ctx => {
-  if (ctx.chat.type !== "private") return;
-
-  const userId = String(ctx.from.id);
-  const text = ctx.message.text.trim();
-
-  const sessionRef = db.collection("sessions").doc(`player_${userId}`);
-  const snap = await sessionRef.get();
-  if (!snap.exists || snap.data().step !== "CHARACTER_NAME") return;
-
-  const worldRef = db.collection("worlds").doc(snap.data().worldId);
-  const world = (await worldRef.get()).data();
-
-  await worldRef.collection("players").doc(userId).set({
-    character: { name: text },
-    createdAt: Date.now()
-  });
-
-  const count = (await worldRef.collection("players").get()).size;
-
-  if (count === world.meta.maxPlayers && world.meta.phase !== "ROLE_SELECTION") {
-    await generateRolesFromWorldPrompt(snap.data().worldId);
-    await announceRoleSelection(snap.data().worldId, world.meta.groupId);
-  }
-
-  await sessionRef.delete();
-  ctx.reply(`Welcome, ${text}`);
 });
 
 /* =====================
