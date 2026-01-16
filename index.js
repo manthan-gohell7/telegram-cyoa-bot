@@ -34,8 +34,7 @@ app.use(express.json());
 bot.command("init", async (ctx) => {
   if (ctx.chat.id !== ADMIN_GROUP_ID) return;
 
-  const snap = await WORLD_REF.get();
-  if (snap.exists) {
+  if ((await WORLD_REF.get()).exists) {
     await ctx.reply("⚠️ World already initialized.");
     return;
   }
@@ -54,48 +53,40 @@ bot.command("init", async (ctx) => {
 
   await ctx.reply(
     "✅ World initialized.\n\n" +
-    "✏️ Please manually populate the following fields in Firestore:\n" +
-    "• setup.worldPrompt\n" +
-    "• setup.systemPrompt\n" +
-    "• setup.rolePrompt\n\n" +
-    "📢 Send /done when ready."
+    "✏️ Populate prompts in Firestore.\n" +
+    "📢 Use /done when ready."
   );
 });
 
 /* =====================
-   /DONE – READ ROLES
+   /DONE – LOCK SETUP
 ===================== */
 bot.command("done", async (ctx) => {
   if (ctx.chat.id !== ADMIN_GROUP_ID) return;
 
   const snap = await WORLD_REF.get();
   if (!snap.exists) {
-    await ctx.reply("❌ World not initialized. Use /init first.");
+    await ctx.reply("❌ Use /init first.");
     return;
   }
 
   const world = snap.data();
   const rolePrompt = world.setup.rolePrompt;
 
-  if (!rolePrompt || rolePrompt.trim() === "") {
+  if (!rolePrompt?.trim()) {
     await ctx.reply("❌ rolePrompt is empty in Firestore.");
     return;
   }
 
-  // Extract roles: "1. THE HUNTER (HUMAN)"
+  // Parse numbered roles
   const roles = rolePrompt
     .split("\n")
-    .map(line => line.trim())
-    .filter(line => /^\d+\.\s/.test(line))
-    .map(line =>
-      line
-        .replace(/^\d+\.\s*/, "")
-        .split("(")[0]
-        .trim()
-    );
+    .map(l => l.trim())
+    .filter(l => /^\d+\.\s/.test(l))
+    .map(l => l.replace(/^\d+\.\s*/, "").split("(")[0].trim());
 
-  if (roles.length === 0) {
-    await ctx.reply("❌ No roles detected. Check rolePrompt format.");
+  if (!roles.length) {
+    await ctx.reply("❌ No roles detected. Check format.");
     return;
   }
 
@@ -104,18 +95,16 @@ bot.command("done", async (ctx) => {
     status: "WAITING_PLAYERS"
   });
 
-  let msg = "🎭 *AVAILABLE ROLES*\n\n";
-  roles.forEach((r, i) => {
-    msg += `${i + 1}. ${r}\n`;
-  });
-
-  msg += "\n📩 Players can now DM `/start` to join.";
-
-  await ctx.reply(msg, { parse_mode: "Markdown" });
+  await ctx.reply(
+    "🕰 *World locked and ready.*\n\n" +
+    "📩 Players may now DM `/start` to join.\n" +
+    "🎭 Roles will be revealed after all players join.",
+    { parse_mode: "Markdown" }
+  );
 });
 
 /* =====================
-   /START – PLAYER DM
+   /START – PLAYER JOIN (DM)
 ===================== */
 bot.start(async (ctx) => {
   if (ctx.chat.type !== "private") return;
@@ -128,7 +117,7 @@ bot.start(async (ctx) => {
 
   const world = snap.data();
   if (world.status !== "WAITING_PLAYERS") {
-    await ctx.reply("⏳ Game not ready yet.");
+    await ctx.reply("⏳ Game not accepting players.");
     return;
   }
 
@@ -168,7 +157,31 @@ bot.on("text", async (ctx) => {
   );
 
   ctx.state.awaitingName = false;
-  await ctx.reply("✅ Name registered.\nRole selection will begin soon.");
+  await ctx.reply("✅ Registered. Please wait.");
+});
+
+/* =====================
+   /ROLES – REVEAL ROLES
+===================== */
+bot.command("roles", async (ctx) => {
+  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
+
+  const snap = await WORLD_REF.get();
+  const world = snap.data();
+
+  if (world.status !== "WAITING_PLAYERS") {
+    await ctx.reply("❌ Cannot reveal roles now.");
+    return;
+  }
+
+  let msg = "🎭 *ROLE SELECTION BEGINS*\n\n";
+  world.roles.forEach((r, i) => {
+    msg += `${i + 1}. ${r}\n`;
+  });
+
+  await WORLD_REF.update({ status: "ROLE_SELECTION" });
+
+  await ctx.reply(msg, { parse_mode: "Markdown" });
 });
 
 /* =====================
