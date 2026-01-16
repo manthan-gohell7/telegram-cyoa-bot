@@ -383,6 +383,25 @@ function buildRoleKeyboard(roles, rolesTaken) {
   };
 }
 
+async function resumeRunningPhase(bot, playerId) {
+  const snap = await WORLD_REF.get();
+  if (!snap.exists) return;
+
+  const world = snap.data();
+  if (world.status !== "RUNNING") return;
+
+  const phase = world.phase;
+  if (!phase?.waitingForChoices) return;
+
+  await bot.telegram.sendMessage(
+    playerId,
+    "⏳ *The story is in progress.*\n\n" +
+    "Please reply with one of the following choices:\n" +
+    "*A*, *B*, or *C*",
+    { parse_mode: "Markdown" }
+  );
+}
+
 /* =====================
    /START – PLAYER JOIN
 ===================== */
@@ -403,11 +422,20 @@ bot.start(async (ctx) => {
      CASE 1: PLAYER ALREADY REGISTERED
   ===================== */
   if (players[playerId]) {
+    const worldStatus = world.status;
+
     await ctx.reply(
       "✅ You are already registered.\nResuming game state..."
     );
 
-    await resumeRoleSelection(bot);
+    if (worldStatus === "ROLE_SELECTION") {
+      await resumeRoleSelection(bot);
+    }
+
+    if (worldStatus === "RUNNING") {
+      await resumeRunningPhase(bot, ctx.from.id);
+    }
+
     return;
   }
 
