@@ -10,7 +10,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_GROUP_ID = Number(process.env.ADMIN_GROUP_ID);
 const PORT = process.env.PORT || 3000;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const MAX_PLAYERS = 3; // Adjust as needed
+const MAX_PLAYERS = 1; // Adjust as needed
 
 /* =====================
    FIREBASE SETUP
@@ -236,28 +236,41 @@ async function initializeWorld() {
 bot.command("init", async (ctx) => {
   if (ctx.chat.id !== ADMIN_GROUP_ID) return;
 
-  const world = await getWorld();
+  const snap = await WORLD_REF.get();
 
-  if (!world) {
-    await initializeWorld();
+  if (!snap.exists) {
+    await WORLD_REF.set({
+      status: "SETUP",
+      setup: {
+        worldPrompt: "",
+        systemPrompt: "",
+        rolePrompt: ""
+      },
+      roles: [],
+      rolesTaken: [],
+      players: {},
+      worldState: "",
+      currentPhase: 0,
+      phaseChoices: {}
+    });
 
     await ctx.reply(
-      "🌍 *World initialized*\n\n" +
-      "A pseudo-database has been created in Firestore.\n\n" +
-      "✍️ Please manually fill the following fields:\n" +
+      "✅ *World initialized*\n\n" +
+      "📦 Pseudo database created.\n\n" +
+      "✍️ Please manually fill these fields in Firestore:\n" +
       "• setup.worldPrompt\n" +
       "• setup.systemPrompt\n" +
       "• setup.rolePrompt\n\n" +
-      "After filling all three, run /done",
+      "When done, run /done",
       { parse_mode: "Markdown" }
     );
     return;
   }
 
   await ctx.reply(
-    "ℹ️ *World already exists*\n\n" +
-    "If you have updated the prompts in Firestore,\n" +
-    "run /done to continue.",
+    "ℹ️ *World already exists.*\n\n" +
+    "If prompts are ready, run /done.\n" +
+    "Otherwise, update them in Firestore.",
     { parse_mode: "Markdown" }
   );
 });
@@ -358,15 +371,20 @@ bot.command("done", async (ctx) => {
   await updateWorld({
     roles,
     rolesTaken: [],
-    status: "WAITING_PLAYERS"
+    players: {},          // 🔥 important for fresh session
+    status: "WAITING_PLAYERS",
+    currentPhase: 0,
+    worldState: "",
+    phaseChoices: {}
   });
 
   await ctx.reply(
-    "✅ *Setup complete!*\n\n" +
-    "Players can now join via /start in DM.\n\n" +
-    `Max players: ${MAX_PLAYERS}`,
+    "🕰 *Setup complete.*\n\n" +
+    "📩 Players may now DM `/start` to join.\n\n" +
+    `👥 Max players: ${MAX_PLAYERS}`,
     { parse_mode: "Markdown" }
   );
+
 });
 
 /* =====================
