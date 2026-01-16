@@ -374,8 +374,13 @@ function extractRoles(rolePrompt) {
   return rolePrompt
     .split("\n")
     .map(l => l.trim())
-    .filter(l => l.startsWith("[ROLE]"))
-    .map(l => l.replace("[ROLE]", "").trim())
+    .filter(l => l.includes("[ROLE]"))
+    .map(l =>
+      l
+        .split("[ROLE]")[1]   // take text after marker
+        .split("(")[0]        // remove (HUMAN) etc
+        .trim()
+    )
     .filter(Boolean);
 }
 
