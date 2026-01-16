@@ -33,6 +33,8 @@ app.use(express.json());
 ===================== */
 const awaitingName = new Set();
 
+const MAX_PLAYERS = 1; // testing
+
 /* =====================
    /INIT – ONE TIME
 ===================== */
@@ -156,8 +158,15 @@ bot.start(async (ctx) => {
   }
 
   const world = snap.data();
+
   if (world.status !== "WAITING_PLAYERS") {
     await ctx.reply("⏳ Player registration closed.");
+    return;
+  }
+
+  const currentPlayers = Object.keys(world.players || {}).length;
+  if (currentPlayers >= MAX_PLAYERS) {
+    await ctx.reply("🚫 Player limit reached.");
     return;
   }
 
@@ -197,10 +206,13 @@ bot.on("text", async (ctx) => {
   await WORLD_REF.update({ players });
   awaitingName.delete(ctx.from.id);
 
-  /* GROUP ANNOUNCEMENT */
+  const joinedCount = Object.keys(players).length;
+
+  /* GROUP ANNOUNCEMENT WITH COUNT */
   await bot.telegram.sendMessage(
     ADMIN_GROUP_ID,
-    `🧍 ${ctx.from.first_name} → *${name}*`,
+    `🧍 ${ctx.from.first_name} → *${name}*\n` +
+    `👥 Players joined: ${joinedCount} / ${MAX_PLAYERS}`,
     { parse_mode: "Markdown" }
   );
 
@@ -210,11 +222,11 @@ bot.on("text", async (ctx) => {
     "Please wait for other players."
   );
 
-  /* AUTO ROLE SELECTION */
-  if (Object.keys(players).length === world.roles.length) {
+  /* ALL PLAYERS JOINED → SHOW ROLES */
+  if (joinedCount === MAX_PLAYERS) {
     await WORLD_REF.update({ status: "ROLE_SELECTION" });
 
-    let msg = "🎭 *ROLE SELECTION BEGINS*\n\n";
+    let msg = "🎭 *ROLE SELECTION*\n\n";
     world.roles.forEach((r, i) => {
       msg += `${i + 1}. ${r}\n`;
     });
