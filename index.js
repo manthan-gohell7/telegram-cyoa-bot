@@ -65,54 +65,35 @@ bot.start(async ctx => {
 
   const userId = String(ctx.from.id);
 
-  // 🔍 Find which group this user belongs to
-  // (For now we assume ONE group → later we can extend)
   const groupSnap = await db.collection("groups").get();
-
   if (groupSnap.empty) {
-    return ctx.reply("🌫️ No world is currently active.");
+    return ctx.reply("No world is currently active.");
   }
 
-  // Take the first active group (current design)
   const groupDoc = groupSnap.docs[0];
-  const groupId = groupDoc.id;
   const activeWorldId = groupDoc.data().activeWorldId;
 
   if (!activeWorldId) {
-    return ctx.reply("🌫️ No world is currently active.");
+    return ctx.reply("No world is currently active.");
   }
 
   const worldRef = db.collection("worlds").doc(activeWorldId);
   const worldSnap = await worldRef.get();
 
   if (!worldSnap.exists) {
-    return ctx.reply("❌ The active world no longer exists.");
+    return ctx.reply("The active world no longer exists.");
   }
 
   const playerRef = worldRef.collection("players").doc(userId);
   const playerSnap = await playerRef.get();
 
-  /* =====================
-     PLAYER EXISTS → RESUME
-  ===================== */
   if (playerSnap.exists) {
-    const player = playerSnap.data();
-
-    await playerRef.update({
-      lastActive: Date.now()
-    });
-
+    await playerRef.update({ lastActive: Date.now() });
     return ctx.reply(
-      `🧭 Welcome back, ${player.character.name}.\n\n` +
-      `🌍 World: ${worldSnap.data().meta.name}\n` +
-      `📜 Your journey continues…`,
-      { parse_mode: "Markdown" }
+      `Welcome back, ${playerSnap.data().character.name}\nWorld: ${worldSnap.data().meta.name}`
     );
   }
 
-  /* =====================
-     NEW PLAYER → ASK NAME
-  ===================== */
   await db.collection("sessions").doc(`player_${userId}`).set({
     step: "CHARACTER_NAME",
     worldId: activeWorldId,
@@ -120,39 +101,14 @@ bot.start(async ctx => {
     createdAt: Date.now()
   });
 
-  return ctx.reply(
-    "✨ A new soul approaches this world.\n\n" +
-    "What is your character name?"
-  );
+  return ctx.reply("A new soul approaches.\nWhat is your character name?");
 });
 
 /* =====================
-   /groupid (DEBUG)
+   /groupid
 ===================== */
 bot.command("groupid", ctx => {
-  ctx.reply(`Group ID: ${ctx.chat.id}`);
-});
-
-/* =====================
-   /help
-===================== */
-bot.command("help", ctx => {
-  ctx.reply(`
-🎮 ASTRA MARE — CYOA BOT
-
-👥 GROUP COMMANDS
-/init   → Select or create a world
-/help   → Show help
-
-🧍 PLAYER (DM)
-/start  → Register character
-A/B/C   → Choose an action when prompted
-
-📜 RULES
-- Group = world narration
-- DM = personal choices
-- Choices must begin with A, B, or C
-`);
+  ctx.reply(String(ctx.chat.id));
 });
 
 /* =====================
@@ -168,38 +124,30 @@ bot.command("init", async ctx => {
 
   if (snapshot.empty) {
     return ctx.reply(
-      "🌍 No worlds exist yet.",
+      "No worlds exist yet.",
       Markup.inlineKeyboard([
-        Markup.button.callback("➕ Create New World", "CREATE_WORLD")
+        Markup.button.callback("Create New World", "CREATE_WORLD")
       ])
     );
   }
 
-  const buttons = snapshot.docs.map(doc => {
-    const data = doc.data();
-    return Markup.button.callback(
-      `🌍 ${data.meta.name}`,
-      `LOAD_${doc.id}`
-    );
-  });
+  const buttons = snapshot.docs.map(doc =>
+    Markup.button.callback(doc.data().meta.name, `LOAD_${doc.id}`)
+  );
 
-  buttons.push(Markup.button.callback("➕ Create New World", "CREATE_WORLD"));
+  buttons.push(Markup.button.callback("Create New World", "CREATE_WORLD"));
 
   await ctx.reply(
-    "🌍 Select a world:",
+    "Select a world:",
     Markup.inlineKeyboard(buttons.map(b => [b]))
   );
 });
 
 /* =====================
-   CREATE WORLD FLOW
+   CREATE WORLD
 ===================== */
 bot.action("CREATE_WORLD", async ctx => {
   await ctx.answerCbQuery();
-
-  if (!ctx.chat || ctx.chat.type === "private") {
-    return ctx.reply("❌ World creation must be done in the group.");
-  }
 
   const groupId = String(ctx.chat.id);
   const adminId = String(ctx.from.id);
@@ -213,46 +161,116 @@ bot.action("CREATE_WORLD", async ctx => {
 
   await ctx.telegram.sendMessage(
     groupId,
-    "🌍 WORLD NAME\n\nSend the name of this world.",
-    { parse_mode: "Markdown" }
+    "Send the world name."
   );
 });
 
 /* =====================
-   LOAD EXISTING WORLD
+   LOAD WORLD
 ===================== */
 bot.action(/^LOAD_(.+)/, async ctx => {
   await ctx.answerCbQuery();
 
-  if (String(ctx.chat.id) !== String(ADMIN_GROUP_ID)) return;
-
   const worldId = ctx.match[1];
-  const worldSnap = await db.collection("worlds").doc(worldId).get();
-
-  if (!worldSnap.exists) {
-    return ctx.reply("❌ This world no longer exists.");
-  }
-
   await db.collection("groups").doc(String(ctx.chat.id)).set({
     activeWorldId: worldId,
     updatedAt: Date.now()
   });
 
-  const world = worldSnap.data();
+  const world = (await db.collection("worlds").doc(worldId).get()).data();
 
   await ctx.reply(
-    `🌍 World Loaded\n\n` +
-    `Name: ${world.meta.name}\n` +
-    `Players may now DM /start`,
-    { parse_mode: "Markdown" }
+    `World loaded: ${world.meta.name}\nPlayers may DM /start`
   );
 });
 
 /* =====================
-   WORLD PROMPT HANDLING (DM)
+   ROLE GENERATION
 ===================== */
+async function generateRolesFromWorldPrompt(worldId) {
+  const worldRef = db.collection("worlds").doc(worldId);
+  const world = (await worldRef.get()).data();
+
+  const response = await callGroq(
+    "You are a game system designer.",
+    `
+World Prompt:
+${world.prompts.worldPrompt}
+
+Extract playable roles only.
+Return JSON:
+[{ "id": "string", "name": "string", "description": "string" }]
+`
+  );
+
+  const roles = JSON.parse(response);
+  if (roles.length !== world.meta.maxPlayers) {
+    throw new Error("Role count mismatch");
+  }
+
+  for (const role of roles) {
+    await worldRef.collection("roles").doc(role.id).set({
+      ...role,
+      assignedTo: null,
+      createdAt: Date.now()
+    });
+  }
+
+  await worldRef.update({ "meta.phase": "ROLE_SELECTION" });
+}
+
 /* =====================
-   DM — CHARACTER NAME HANDLING
+   ANNOUNCE ROLE SELECTION
+===================== */
+async function announceRoleSelection(worldId, groupId) {
+  const rolesSnap = await db
+    .collection("worlds")
+    .doc(worldId)
+    .collection("roles")
+    .get();
+
+  const buttons = rolesSnap.docs.map(doc =>
+    Markup.button.callback(doc.data().name, `ROLE_${doc.id}`)
+  );
+
+  await bot.telegram.sendMessage(
+    groupId,
+    "Role selection phase. Choose one role.",
+    Markup.inlineKeyboard(buttons.map(b => [b]))
+  );
+}
+
+/* =====================
+   ROLE PICK
+===================== */
+bot.action(/^ROLE_(.+)/, async ctx => {
+  await ctx.answerCbQuery();
+
+  const roleId = ctx.match[1];
+  const userId = String(ctx.from.id);
+  const groupId = String(ctx.chat.id);
+
+  const worldId = (await db.collection("groups").doc(groupId).get()).data().activeWorldId;
+  const worldRef = db.collection("worlds").doc(worldId);
+
+  const roleRef = worldRef.collection("roles").doc(roleId);
+  const role = (await roleRef.get()).data();
+
+  if (role.assignedTo) return ctx.reply("Role already taken.");
+
+  await roleRef.update({ assignedTo: userId });
+  await worldRef.collection("players").doc(userId).update({
+    "character.role": { id: roleId, name: role.name }
+  });
+
+  await ctx.telegram.sendMessage(
+    groupId,
+    `Role locked: ${role.name}`
+  );
+});
+
+/* =====================
+   DM CHARACTER NAME HANDLER
 ===================== */
 bot.on("text", async ctx => {
   if (ctx.chat.type !== "private") return;
@@ -262,66 +280,37 @@ bot.on("text", async ctx => {
 
   const sessionRef = db.collection("sessions").doc(`player_${userId}`);
   const sessionSnap = await sessionRef.get();
-
   if (!sessionSnap.exists) return;
 
   const session = sessionSnap.data();
+  if (session.step !== "CHARACTER_NAME") return;
 
-  /* =====================
-     CHARACTER NAME STEP
-  ===================== */
-  if (session.step === "CHARACTER_NAME") {
-    if (text.length < 2 || text.length > 30) {
-      return ctx.reply("❌ Character name must be 2–30 characters long.");
-    }
+  const worldRef = db.collection("worlds").doc(session.worldId);
+  const world = (await worldRef.get()).data();
 
-    const worldRef = db.collection("worlds").doc(session.worldId);
-    const worldSnap = await worldRef.get();
+  await worldRef.collection("players").doc(userId).set({
+    userId,
+    character: { name: text },
+    stats: {
+      skillEssence: { current: 100, max: 100, regenPerTurn: 20 }
+    },
+    createdAt: Date.now()
+  });
 
-    if (!worldSnap.exists) {
-      await sessionRef.delete();
-      return ctx.reply("❌ The world no longer exists.");
-    }
+  const playersCount = (await worldRef.collection("players").get()).size;
 
-    const playerRef = worldRef.collection("players").doc(userId);
+  await bot.telegram.sendMessage(
+    world.meta.groupId,
+    `Player joined: ${text} (${playersCount}/${world.meta.maxPlayers})`
+  );
 
-    // 🔒 Safety check (no overwrite)
-    const existing = await playerRef.get();
-    if (existing.exists) {
-      await sessionRef.delete();
-      return ctx.reply("🧭 You are already registered in this world.");
-    }
-
-    await playerRef.set({
-      userId,
-      telegram: {
-        id: userId,
-        username: ctx.from.username || null,
-        firstName: ctx.from.first_name || null
-      },
-      character: {
-        name: text
-      },
-      stats: {
-        hp: 100,
-        stamina: 100,
-        will: 10
-      },
-      effects: {},
-      relationships: {},
-      createdAt: Date.now(),
-      lastActive: Date.now()
-    });
-
-    await sessionRef.delete();
-
-    return ctx.reply(
-      `✨ ${text} has entered the world.\n\n` +
-      `🌍 World: ${worldSnap.data().meta.name}\n` +
-      `📜 Await the call of fate…`,
-      { parse_mode: "Markdown" }
-    );
+  if (playersCount === world.meta.maxPlayers && world.meta.phase !== "ROLE_SELECTION") {
+    await generateRolesFromWorldPrompt(session.worldId);
+    await announceRoleSelection(session.worldId, world.meta.groupId);
   }
+
+  await sessionRef.delete();
+  return ctx.reply(`Welcome, ${text}`);
 });
 
 /* =====================
@@ -336,5 +325,5 @@ app.post("/webhook", (req, res) => {
    SERVER
 ===================== */
 app.listen(PORT, () => {
-  console.log("🔥 Astra Mare CYOA bot running (Firestore + Groq)");
+  console.log("Bot running");
 });
