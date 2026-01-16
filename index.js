@@ -2,6 +2,7 @@ import express from "express";
 import { Telegraf, Markup } from "telegraf";
 import axios from "axios";
 import admin from "firebase-admin";
+import { session } from "telegraf";
 
 /* =====================
    ENV
@@ -27,6 +28,9 @@ const WORLD_REF = db.collection("world").doc("main");
    BOT
 ===================== */
 const bot = new Telegraf(BOT_TOKEN);
+
+bot.use(session());
+
 const app = express();
 app.use(express.json());
 
@@ -104,42 +108,38 @@ bot.command("init", async (ctx) => {
    PROMPT COLLECTION
 ===================== */
 bot.on("text", async (ctx) => {
-  if (!ctx.session?.collecting) return;
 
-  if (ctx.message.text === "/done") {
-    const step = ctx.session.collecting.toLowerCase();
-    await WORLD_REF.update({
-      [`setup.${step}Prompt`]: ctx.session.buffer,
-      "setup.completedSteps": admin.firestore.FieldValue.arrayUnion(step)
-    });
+  /* =====================
+     GROUP – SETUP PROMPTS
+  ===================== */
+  if (ctx.chat.id === ADMIN_GROUP_ID && ctx.session?.collecting) {
 
-    ctx.session = null;
+    if (ctx.message.text === "/done") {
+      const step = ctx.session.collecting.toLowerCase();
 
-    await ctx.reply(`✅ ${step} prompt saved.`);
+      await WORLD_REF.update({
+        [`setup.${step}Prompt`]: ctx.session.buffer,
+        "setup.completedSteps": admin.firestore.FieldValue.arrayUnion(step)
+      });
+
+      ctx.session = null;
+
+      await ctx.reply(`✅ ${step} prompt saved.`);
+      return;
+    }
+
+    ctx.session.buffer += ctx.message.text + "\n";
     return;
   }
 
-  ctx.session.buffer += ctx.message.text + "\n";
-});
-
-/* =====================
-   /START (DM)
-===================== */
-bot.start(async (ctx) => {
-  if (ctx.chat.type !== "private") return;
-
-  await ctx.reply("Enter your character name:");
-  ctx.session = { state: "NAME" };
-});
-
-bot.on("text", async (ctx) => {
-  if (ctx.chat.type !== "private") return;
-
-  const world = (await WORLD_REF.get()).data();
-  const players = world.players || {};
-
-  if (ctx.session?.state === "NAME") {
+  /* =====================
+     DM – PLAYER FLOW
+  ===================== */
+  if (ctx.chat.type === "private" && ctx.session?.state === "NAME") {
     const name = ctx.message.text.trim();
+    const snap = await WORLD_REF.get();
+    const world = snap.data();
+    const players = world.players || {};
 
     if (Object.values(players).some(p => p.characterName === name)) {
       await ctx.reply("❌ Name already taken. Choose another.");
@@ -162,9 +162,19 @@ bot.on("text", async (ctx) => {
 
     ctx.session = { state: "ROLE" };
     await ctx.reply("✅ Name registered. Role selection coming soon.");
+    return;
   }
 });
 
+/* =====================
+   /START (DM)
+===================== */
+bot.start(async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
+  await ctx.reply("Enter your character name:");
+  ctx.session = { state: "NAME" };
+});
 /* =====================
    SERVER
 ===================== */
