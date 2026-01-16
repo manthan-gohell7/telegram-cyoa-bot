@@ -1,5 +1,5 @@
 import express from "express";
-import { Telegraf, Markup } from "telegraf";
+import { Telegraf } from "telegraf";
 import admin from "firebase-admin";
 
 /* =====================
@@ -29,13 +29,17 @@ const app = express();
 app.use(express.json());
 
 /* =====================
+   TEMP STATE (IMPORTANT)
+===================== */
+const awaitingName = new Set();
+
+/* =====================
    /INIT – ONE TIME
 ===================== */
 bot.command("init", async (ctx) => {
   if (ctx.chat.id !== ADMIN_GROUP_ID) return;
 
-  const snap = await WORLD_REF.get();
-  if (snap.exists) {
+  if ((await WORLD_REF.get()).exists) {
     await ctx.reply("⚠️ World already initialized.");
     return;
   }
@@ -75,7 +79,7 @@ bot.command("done", async (ctx) => {
   const rolePrompt = world.setup.rolePrompt;
 
   if (!rolePrompt?.trim()) {
-    await ctx.reply("❌ rolePrompt is empty in Firestore.");
+    await ctx.reply("❌ rolePrompt is empty.");
     return;
   }
 
@@ -120,22 +124,22 @@ bot.start(async (ctx) => {
     return;
   }
 
+  awaitingName.add(ctx.from.id);
+
   await ctx.reply(
     "🌍 *Welcome to the world.*\n\n" +
     "You are about to enter a story shaped by will and consequence.\n\n" +
     "📝 Enter your character name:",
     { parse_mode: "Markdown" }
   );
-
-  ctx.state.awaitingName = true;
 });
 
 /* =====================
-   PLAYER NAME INPUT
+   NAME HANDLER (FIXED)
 ===================== */
 bot.on("text", async (ctx) => {
   if (ctx.chat.type !== "private") return;
-  if (!ctx.state.awaitingName) return;
+  if (!awaitingName.has(ctx.from.id)) return;
 
   const name = ctx.message.text.trim();
   const snap = await WORLD_REF.get();
@@ -154,35 +158,31 @@ bot.on("text", async (ctx) => {
   };
 
   await WORLD_REF.update({ players });
+  awaitingName.delete(ctx.from.id);
 
+  /* GROUP ANNOUNCEMENT */
   await bot.telegram.sendMessage(
     ADMIN_GROUP_ID,
     `🧍 ${ctx.from.first_name} → *${name}*`,
     { parse_mode: "Markdown" }
   );
 
-  ctx.state.awaitingName = false;
-
+  /* PERSONAL CONFIRMATION */
   await ctx.reply(
     "✅ Character registered.\n\n" +
-    "Please wait for other players.",
+    "Please wait for other players."
   );
 
-  /* =====================
-     AUTO ROLE SELECTION
-  ===================== */
-  const playerCount = Object.keys(players).length;
-  const roleCount = world.roles.length;
-
-  if (playerCount === roleCount) {
+  /* AUTO ROLE SELECTION */
+  if (Object.keys(players).length === world.roles.length) {
     await WORLD_REF.update({ status: "ROLE_SELECTION" });
 
-    let msg = "🎭 *ROLE SELECTION*\n\n";
+    let msg = "🎭 *ROLE SELECTION BEGINS*\n\n";
     world.roles.forEach((r, i) => {
       msg += `${i + 1}. ${r}\n`;
     });
 
-    msg += "\n📩 Role selection will begin in DM.";
+    msg += "\n📩 Roles will be selected in DM.";
 
     await bot.telegram.sendMessage(
       ADMIN_GROUP_ID,
