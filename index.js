@@ -79,6 +79,30 @@ async function checkAndStartRoleSelection(bot) {
   }
 }
 
+async function resumeRoleSelection(bot) {
+  const snap = await WORLD_REF.get();
+  if (!snap.exists) return;
+
+  const world = snap.data();
+  if (world.status !== "ROLE_SELECTION") return;
+
+  const players = world.players || {};
+  const rolesTaken = world.rolesTaken || [];
+
+  for (const [playerId, player] of Object.entries(players)) {
+    if (player.role) continue; // already selected
+
+    await bot.telegram.sendMessage(
+      playerId,
+      "🎭 *Role selection in progress*\nPlease choose your role:",
+      {
+        parse_mode: "Markdown",
+        reply_markup: buildRoleKeyboard(world.roles, rolesTaken)
+      }
+    );
+  }
+}
+
 /* =====================
    /INIT – ONE TIME
 ===================== */
@@ -144,12 +168,16 @@ bot.command("init", async (ctx) => {
       break;
     }
 
-
     case "ROLE_SELECTION":
       await ctx.reply(
-        "🎭 Role selection has already started."
+        "🎭 *Role selection is in progress.*\n\n" +
+        "📩 Re-sending role selection to pending players.",
+        { parse_mode: "Markdown" }
       );
+
+      await resumeRoleSelection(bot);
       break;
+
 
     case "RUNNING":
       await ctx.reply(
@@ -236,15 +264,12 @@ bot.start(async (ctx) => {
   ===================== */
   if (players[playerId]) {
     await ctx.reply(
-      "✅ You are already registered.\n" +
-      "Resuming game state..."
+      "✅ You are already registered.\nResuming game state..."
     );
 
-    // 🔥 Re-evaluate world progression
-    await checkAndStartRoleSelection(bot);
+    await resumeRoleSelection(bot);
     return;
   }
-
 
   /* =====================
      CASE 2: NEW PLAYER, CHECK LIMIT
