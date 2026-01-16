@@ -70,8 +70,7 @@ async function callGroq(systemPrompt, userPrompt, temperature = 0.85) {
    PROMPT BUILDERS
 ===================== */
 function buildGroupNarrationPrompt(worldPrompt, worldState, systemPrompt) {
-  return `${systemPrompt}
-
+  return `
 WORLD LORE:
 ${worldPrompt}
 
@@ -105,8 +104,7 @@ function buildPersonalNarrationPrompt(
     ? `\n\nPREVIOUS PLAYER CHOICE:\n${previousChoice}\n\nYou must acknowledge and build upon this choice in the narration.`
     : "";
 
-  return `${systemPrompt}
-
+  return `
 WORLD LORE:
 ${worldPrompt}
 
@@ -159,8 +157,7 @@ function buildWorldUpdatePrompt(
     .map(([name, choice]) => `${name}: ${choice}`)
     .join("\n");
 
-  return `${systemPrompt}
-
+  return `$
 WORLD LORE:
 ${worldPrompt}
 
@@ -211,24 +208,77 @@ async function setWorld(data) {
 ===================== */
 async function initializeWorld() {
   await setWorld({
-    status: "SETUP_PENDING",
-
+    status: "SETUP",
     setup: {
       worldPrompt: "",
       systemPrompt: "",
       rolePrompt: ""
     },
-
     roles: [],
     rolesTaken: [],
     players: {},
-
     worldState: "",
     currentPhase: 0,
-    phaseChoices: {},
-    gameLog: []
+    phaseChoices: {}
   });
 }
+
+/* =====================
+   PLAYER JOIN (/start)
+===================== */
+bot.start(async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
+  const world = await getWorld();
+  if (!world) {
+    await ctx.reply(
+      "❌ *Setup incomplete*\n\n" +
+      "Please ensure all of the following are filled in Firestore:\n" +
+      "• setup.worldPrompt\n" +
+      "• setup.systemPrompt\n" +
+      "• setup.rolePrompt",
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  const playerId = String(ctx.from.id);
+  const players = world.players || {};
+
+  // Player already registered
+  if (players[playerId]) {
+    await handleReturningPlayer(ctx, world, playerId);
+    return;
+  }
+
+  // Check if accepting new players
+  if (world.status !== "WAITING_PLAYERS") {
+    await ctx.reply("⏳ Currently waiting for other players to join the game");
+    return;
+  }
+
+  // Check player limit
+  if (Object.keys(players).length >= MAX_PLAYERS) {
+    const list = Object.values(players)
+      .map(p => `• ${p.characterName}`)
+      .join("\n");
+
+    await ctx.reply(
+      `🚫 *Player limit reached (${MAX_PLAYERS})*\n\n` +
+      `Registered players:\n${list}`,
+      { parse_mode: "Markdown" }
+    );
+    return;
+  }
+
+  // Accept new player
+  awaitingName.add(ctx.from.id);
+  await ctx.reply(
+    "🌍 *Welcome to the world!*\n\n" +
+    "Please enter your *character name*:",
+    { parse_mode: "Markdown" }
+  );
+});
 
 /* =====================
    /INIT COMMAND
@@ -239,20 +289,7 @@ bot.command("init", async (ctx) => {
   const snap = await WORLD_REF.get();
 
   if (!snap.exists) {
-    await WORLD_REF.set({
-      status: "SETUP",
-      setup: {
-        worldPrompt: "",
-        systemPrompt: "",
-        rolePrompt: ""
-      },
-      roles: [],
-      rolesTaken: [],
-      players: {},
-      worldState: "",
-      currentPhase: 0,
-      phaseChoices: {}
-    });
+    await initializeWorld();
 
     await ctx.reply(
       "✅ *World initialized*\n\n" +
@@ -273,56 +310,6 @@ bot.command("init", async (ctx) => {
     "Otherwise, update them in Firestore.",
     { parse_mode: "Markdown" }
   );
-});
-
-/* =====================
-   PROMPT COLLECTION
-===================== */
-bot.on("text", async (ctx) => {
-  const chatId = ctx.chat.id;
-  const text = ctx.message.text;
-
-  // Skip commands
-  if (text.startsWith("/")) return;
-
-  // Handle group messages during setup
-  if (chatId === ADMIN_GROUP_ID) {
-    const world = await getWorld();
-    if (!world) return;
-
-    const status = world.status;
-
-    if (["AWAITING_WORLD_PROMPT", "AWAITING_SYSTEM_PROMPT", "AWAITING_ROLE_PROMPT"].includes(status)) {
-      // Store as group-level, not user-level
-      const key = "admin_prompt";
-
-      if (!pendingPrompts.has(key)) {
-        pendingPrompts.set(key, { type: status, parts: [] });
-      }
-
-      const pending = pendingPrompts.get(key);
-
-      // Verify we're still collecting the same type
-      if (pending.type !== status) {
-        // Reset if status changed
-        pending.type = status;
-        pending.parts = [];
-      }
-
-      pending.parts.push(text);
-
-      // Only acknowledge first message to avoid spam
-      if (pending.parts.length === 1) {
-        await ctx.reply("📝 Message received. Send more if needed, or /done to finalize.");
-      }
-    }
-    return;
-  }
-
-  // Handle DM messages
-  if (ctx.chat.type === "private") {
-    await handlePrivateMessage(ctx);
-  }
 });
 
 /* =====================
@@ -352,12 +339,7 @@ bot.command("done", async (ctx) => {
   }
 
   // Parse roles
-  const roles = rolePrompt
-    .split("\n")
-    .map(l => l.trim())
-    .filter(l => /^\d+\.\s/.test(l))
-    .map(l => l.replace(/^\d+\.\s*/, "").split(/[(\-]/)[0].trim())
-    .filter(Boolean);
+  const roles = extractRoles(rolePrompt);
 
   if (roles.length === 0) {
     await ctx.reply(
@@ -384,57 +366,220 @@ bot.command("done", async (ctx) => {
     `👥 Max players: ${MAX_PLAYERS}`,
     { parse_mode: "Markdown" }
   );
+});
 
+function extractRoles(rolePrompt) {
+  if (!rolePrompt) return [];
+
+  return rolePrompt
+    .split("\n")
+    .map(l => l.trim())
+    .filter(l => l.startsWith("[ROLE]"))
+    .map(l => l.replace("[ROLE]", "").trim())
+    .filter(Boolean);
+}
+
+/* =====================
+   RESET COMMAND (Optional)
+===================== */
+bot.command("reset", async (ctx) => {
+  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
+
+  await ctx.reply(
+    "⚠️ *WARNING*\n\n" +
+    "This will delete all world data and start fresh.\n\n" +
+    "Type /confirmreset to proceed.",
+    { parse_mode: "Markdown" }
+  );
+});
+
+bot.command("confirmreset", async (ctx) => {
+  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
+
+  await WORLD_REF.delete();
+  awaitingName.clear();
+  awaitingChoice.clear();
+  pendingPrompts.clear();
+
+  await ctx.reply("✅ World reset complete. Use /init to start fresh.");
 });
 
 /* =====================
-   PLAYER JOIN (/start)
+   STATUS COMMAND
 ===================== */
-bot.start(async (ctx) => {
-  if (ctx.chat.type !== "private") return;
+bot.command("status", async (ctx) => {
+  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
 
   const world = await getWorld();
   if (!world) {
-    await ctx.reply("❌ Game not initialized yet. Contact administrator.");
+    await ctx.reply("❌ No world exists. Use /init to create one.");
     return;
   }
 
-  const playerId = String(ctx.from.id);
   const players = world.players || {};
+  const playerList = Object.values(players)
+    .map(p => `• ${p.characterName} (${p.role || "no role"})`)
+    .join("\n") || "None";
 
-  // Player already registered
-  if (players[playerId]) {
-    await handleReturningPlayer(ctx, world, playerId);
-    return;
+  let msg = `📊 *WORLD STATUS*\n\n`;
+  msg += `Status: ${world.status}\n`;
+  msg += `Phase: ${world.currentPhase || 0}\n`;
+  msg += `Players: ${Object.keys(players).length}/${MAX_PLAYERS}\n\n`;
+  msg += `Registered:\n${playerList}`;
+
+  await ctx.reply(msg, { parse_mode: "Markdown" });
+});
+
+/* =====================
+   DEBUG COMMAND (Remove in production)
+===================== */
+bot.command("debug", async (ctx) => {
+  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
+
+  const world = await getWorld();
+  const key = "admin_prompt";
+  const pending = pendingPrompts.get(key);
+
+  let msg = "🔍 *DEBUG INFO*\n\n";
+  msg += `World exists: ${world ? "Yes" : "No"}\n`;
+
+  if (world) {
+    msg += `Status: ${world.status}\n`;
+    msg += `World prompt length: ${world.setup?.worldPrompt?.length || 0}\n`;
+    msg += `System prompt length: ${world.setup?.systemPrompt?.length || 0}\n`;
+    msg += `Role prompt length: ${world.setup?.rolePrompt?.length || 0}\n`;
   }
 
-  // Check if accepting new players
-  if (world.status !== "WAITING_PLAYERS") {
-    await ctx.reply("⏳ Player registration is currently closed.");
-    return;
+  msg += `\nPending prompt: ${pending ? "Yes" : "No"}\n`;
+
+  if (pending) {
+    msg += `Pending type: ${pending.type}\n`;
+    msg += `Pending parts: ${pending.parts.length}\n`;
+    msg += `Total length: ${pending.parts.join("").length}\n`;
   }
 
-  // Check player limit
-  if (Object.keys(players).length >= MAX_PLAYERS) {
-    const list = Object.values(players)
-      .map(p => `• ${p.characterName}`)
-      .join("\n");
+  await ctx.reply(msg, { parse_mode: "Markdown" });
+});
 
-    await ctx.reply(
-      `🚫 *Player limit reached (${MAX_PLAYERS})*\n\n` +
-      `Registered players:\n${list}`,
+/* =====================
+   ROLE CALLBACK
+===================== */
+bot.on("callback_query", async (ctx) => {
+  const data = ctx.callbackQuery.data;
+  if (!data.startsWith("ROLE:")) return;
+
+  const chosenRole = data.split(":")[1];
+  const playerId = String(ctx.from.id);
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(WORLD_REF);
+      const world = snap.data();
+
+      const players = world.players || {};
+      const rolesTaken = world.rolesTaken || [];
+
+      if (!players[playerId]) {
+        throw new Error("You are not registered.");
+      }
+
+      if (players[playerId].role) {
+        throw new Error("You already selected a role.");
+      }
+
+      if (rolesTaken.includes(chosenRole)) {
+        throw new Error("Role already taken. Choose another.");
+      }
+
+      players[playerId].role = chosenRole;
+      rolesTaken.push(chosenRole);
+
+      tx.update(WORLD_REF, { players, rolesTaken });
+    });
+
+    await ctx.editMessageText(
+      `✅ You are now: *${chosenRole}*`,
       { parse_mode: "Markdown" }
     );
-    return;
-  }
 
-  // Accept new player
-  awaitingName.add(ctx.from.id);
-  await ctx.reply(
-    "🌍 *Welcome to the world!*\n\n" +
-    "Please enter your *character name*:",
-    { parse_mode: "Markdown" }
-  );
+    const world = await getWorld();
+    const characterName = world.players[playerId].characterName;
+
+    await bot.telegram.sendMessage(
+      ADMIN_GROUP_ID,
+      `🎭 *${characterName}* → *${chosenRole}*`,
+      { parse_mode: "Markdown" }
+    );
+
+    // Check if all roles selected
+    await checkAndStartGame();
+
+  } catch (err) {
+    await ctx.answerCbQuery(err.message, { show_alert: true });
+  }
+});
+
+/* =====================
+   PROMPT COLLECTION
+===================== */
+bot.on("text", async (ctx) => {
+  const chatId = ctx.chat.id;
+  const text = ctx.message.text;
+
+  // Skip commands
+  if (text.startsWith("/")) return;
+
+  // // Handle group messages during setup
+  // if (chatId === ADMIN_GROUP_ID) {
+  //   const world = await getWorld();
+  //   if (!world) return;
+
+  //   const status = world.status;
+
+  //   if (["AWAITING_WORLD_PROMPT", "AWAITING_SYSTEM_PROMPT", "AWAITING_ROLE_PROMPT"].includes(status)) {
+  //     // Store as group-level, not user-level
+  //     const key = "admin_prompt";
+
+  //     if (!pendingPrompts.has(key)) {
+  //       pendingPrompts.set(key, { type: status, parts: [] });
+  //     }
+
+  //     const pending = pendingPrompts.get(key);
+
+  //     // Verify we're still collecting the same type
+  //     if (pending.type !== status) {
+  //       // Reset if status changed
+  //       pending.type = status;
+  //       pending.parts = [];
+  //     }
+
+  //     pending.parts.push(text);
+
+  //     // Only acknowledge first message to avoid spam
+  //     if (pending.parts.length === 1) {
+  //       await ctx.reply("📝 Message received. Send more if needed, or /done to finalize.");
+  //     }
+  //   }
+  //   return;
+  // }
+
+  // Handle DM messages
+  if (ctx.chat.type === "private") {
+    await handlePrivateMessage(ctx);
+  }
+});
+
+/* =====================
+   ERROR HANDLING
+===================== */
+bot.catch((err, ctx) => {
+  console.error("Bot error:", err);
+  console.error("Context:", {
+    chat: ctx.chat?.id,
+    from: ctx.from?.id,
+    message: ctx.message?.text
+  });
+  ctx.reply("❌ An error occurred. Please try again or contact administrator.");
 });
 
 /* =====================
@@ -496,13 +641,13 @@ async function handleNameSelection(ctx, name) {
   );
 
   if (duplicate) {
-    await ctx.reply("❌ This name is already taken. Please choose another:");
+    await ctx.reply("❌ This name is already taken. Please choose another");
     return;
   }
 
   // Register player
   players[playerId] = {
-    tgName: ctx.from.username || ctx.from.first_name,
+    tgName: ctx.from.first_name || ctx.from.username,
     characterName: name,
     role: null,
     currentChoice: null
@@ -513,18 +658,18 @@ async function handleNameSelection(ctx, name) {
 
   const joined = Object.keys(players).length;
 
+  // Confirm to player
+  await ctx.reply(
+    "✅ *Character registered!*\n\n" +
+    `Waiting for other players... (${joined}/${MAX_PLAYERS})`,
+    { parse_mode: "Markdown" }
+  );
+
   // Announce in group
   await bot.telegram.sendMessage(
     ADMIN_GROUP_ID,
     `🧍 *${ctx.from.first_name}* → *${name}*\n` +
     `👥 Players: ${joined}/${MAX_PLAYERS}`,
-    { parse_mode: "Markdown" }
-  );
-
-  // Confirm to player
-  await ctx.reply(
-    "✅ *Character registered!*\n\n" +
-    `Waiting for other players... (${joined}/${MAX_PLAYERS})`,
     { parse_mode: "Markdown" }
   );
 
@@ -569,16 +714,16 @@ async function sendRoleSelection(playerId, world) {
   );
 }
 
-async function resumeRoleSelection() {
-  const world = await getWorld();
-  if (world.status !== "ROLE_SELECTION") return;
+// async function resumeRoleSelection() {
+//   const world = await getWorld();
+//   if (world.status !== "ROLE_SELECTION") return;
 
-  for (const [playerId, player] of Object.entries(world.players)) {
-    if (!player.role) {
-      await sendRoleSelection(playerId, world);
-    }
-  }
-}
+//   for (const [playerId, player] of Object.entries(world.players)) {
+//     if (!player.role) {
+//       await sendRoleSelection(playerId, world);
+//     }
+//   }
+// }
 
 function buildRoleKeyboard(roles, rolesTaken) {
   const available = roles.filter(r => !rolesTaken.includes(r));
@@ -589,64 +734,6 @@ function buildRoleKeyboard(roles, rolesTaken) {
     ])
   };
 }
-
-/* =====================
-   ROLE CALLBACK
-===================== */
-bot.on("callback_query", async (ctx) => {
-  const data = ctx.callbackQuery.data;
-  if (!data.startsWith("ROLE:")) return;
-
-  const chosenRole = data.split(":")[1];
-  const playerId = String(ctx.from.id);
-
-  try {
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(WORLD_REF);
-      const world = snap.data();
-
-      const players = world.players || {};
-      const rolesTaken = world.rolesTaken || [];
-
-      if (!players[playerId]) {
-        throw new Error("You are not registered.");
-      }
-
-      if (players[playerId].role) {
-        throw new Error("You already selected a role.");
-      }
-
-      if (rolesTaken.includes(chosenRole)) {
-        throw new Error("Role already taken. Choose another.");
-      }
-
-      players[playerId].role = chosenRole;
-      rolesTaken.push(chosenRole);
-
-      tx.update(WORLD_REF, { players, rolesTaken });
-    });
-
-    await ctx.editMessageText(
-      `✅ You are now: *${chosenRole}*`,
-      { parse_mode: "Markdown" }
-    );
-
-    const world = await getWorld();
-    const characterName = world.players[playerId].characterName;
-
-    await bot.telegram.sendMessage(
-      ADMIN_GROUP_ID,
-      `🎭 *${characterName}* → *${chosenRole}*`,
-      { parse_mode: "Markdown" }
-    );
-
-    // Check if all roles selected
-    await checkAndStartGame();
-
-  } catch (err) {
-    await ctx.answerCbQuery(err.message, { show_alert: true });
-  }
-});
 
 /* =====================
    START GAME
@@ -691,7 +778,7 @@ async function sendGroupNarration(isFirst = false) {
   try {
     groupText = await callGroq(world.setup.systemPrompt, groupPrompt);
   } catch (error) {
-    groupText = "The world shifts and changes as the story unfolds...";
+    groupText = "The world shifts and changes as the story unfolds...\nThe souls must forge their destiny through hardships and triumphs.";
   }
 
   const header = isFirst
@@ -791,14 +878,43 @@ async function checkAndProcessPhase() {
     pid => phaseChoices[players[pid].characterName]
   );
 
-  if (!allChosen) return;
+  if (!allChosen) {
+    const submittedPlayers = [];
+    const remainingPlayers = [];
 
-  // All choices received - process phase
-  await bot.telegram.sendMessage(
-    ADMIN_GROUP_ID,
-    "⏳ *Processing all player choices...*",
-    { parse_mode: "Markdown" }
-  );
+    for (const pid of Object.keys(players)) {
+      const charName = players[pid].characterName;
+
+      if (phaseChoices[charName]) {
+        submittedPlayers.push(charName);
+      } else {
+        remainingPlayers.push(charName);
+      }
+    }
+
+    let message = "⏳ *Player Choice Status*\n\n";
+
+    if (submittedPlayers.length > 0) {
+      message += "✅ *Submitted:*\n";
+      message += submittedPlayers.map(n => `• ${n}`).join("\n");
+      message += "\n\n";
+    }
+
+    if (remainingPlayers.length > 0) {
+      message += "⌛ *Waiting on:*\n";
+      message += remainingPlayers.map(n => `• ${n}`).join("\n");
+    } else {
+      message += "🎉 *All players have submitted their choices!*";
+    }
+
+    await bot.telegram.sendMessage(
+      ADMIN_GROUP_ID,
+      message,
+      { parse_mode: "Markdown" }
+    );
+
+    return;
+  };
 
   // Generate world update
   const updatePrompt = buildWorldUpdatePrompt(
@@ -823,106 +939,11 @@ async function checkAndProcessPhase() {
   });
 
   // Send updated group narration
-  await sendGroupNarration(false);
+  await sendGroupNarration();
 
   // Send next personal narrations
   await sendPersonalNarrations(phaseChoices);
 }
-
-/* =====================
-   RESET COMMAND (Optional)
-===================== */
-bot.command("reset", async (ctx) => {
-  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
-
-  await ctx.reply(
-    "⚠️ *WARNING*\n\n" +
-    "This will delete all world data and start fresh.\n\n" +
-    "Type /confirmreset to proceed.",
-    { parse_mode: "Markdown" }
-  );
-});
-
-bot.command("confirmreset", async (ctx) => {
-  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
-
-  await WORLD_REF.delete();
-  awaitingName.clear();
-  awaitingChoice.clear();
-  pendingPrompts.clear();
-
-  await ctx.reply("✅ World reset complete. Use /init to start fresh.");
-});
-
-/* =====================
-   STATUS COMMAND
-===================== */
-bot.command("status", async (ctx) => {
-  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
-
-  const world = await getWorld();
-  if (!world) {
-    await ctx.reply("❌ No world exists. Use /init to create one.");
-    return;
-  }
-
-  const players = world.players || {};
-  const playerList = Object.values(players)
-    .map(p => `• ${p.characterName} (${p.role || "no role"})`)
-    .join("\n") || "None";
-
-  let msg = `📊 *WORLD STATUS*\n\n`;
-  msg += `Status: ${world.status}\n`;
-  msg += `Phase: ${world.currentPhase || 0}\n`;
-  msg += `Players: ${Object.keys(players).length}/${MAX_PLAYERS}\n\n`;
-  msg += `Registered:\n${playerList}`;
-
-  await ctx.reply(msg, { parse_mode: "Markdown" });
-});
-
-/* =====================
-   ERROR HANDLING
-===================== */
-bot.catch((err, ctx) => {
-  console.error("Bot error:", err);
-  console.error("Context:", {
-    chat: ctx.chat?.id,
-    from: ctx.from?.id,
-    message: ctx.message?.text
-  });
-  ctx.reply("❌ An error occurred. Please try again or contact administrator.");
-});
-
-/* =====================
-   DEBUG COMMAND (Remove in production)
-===================== */
-bot.command("debug", async (ctx) => {
-  if (ctx.chat.id !== ADMIN_GROUP_ID) return;
-
-  const world = await getWorld();
-  const key = "admin_prompt";
-  const pending = pendingPrompts.get(key);
-
-  let msg = "🔍 *DEBUG INFO*\n\n";
-  msg += `World exists: ${world ? "Yes" : "No"}\n`;
-
-  if (world) {
-    msg += `Status: ${world.status}\n`;
-    msg += `World prompt length: ${world.setup?.worldPrompt?.length || 0}\n`;
-    msg += `System prompt length: ${world.setup?.systemPrompt?.length || 0}\n`;
-    msg += `Role prompt length: ${world.setup?.rolePrompt?.length || 0}\n`;
-  }
-
-  msg += `\nPending prompt: ${pending ? "Yes" : "No"}\n`;
-
-  if (pending) {
-    msg += `Pending type: ${pending.type}\n`;
-    msg += `Pending parts: ${pending.parts.length}\n`;
-    msg += `Total length: ${pending.parts.join("").length}\n`;
-  }
-
-  await ctx.reply(msg, { parse_mode: "Markdown" });
-});
 
 /* =====================
    SERVER & LAUNCH
