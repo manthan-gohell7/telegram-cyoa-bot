@@ -251,208 +251,76 @@ bot.action(/^LOAD_(.+)/, async ctx => {
 /* =====================
    WORLD PROMPT HANDLING (DM)
 ===================== */
+/* =====================
+   DM — CHARACTER NAME HANDLING
+===================== */
 bot.on("text", async ctx => {
-  // GROUP ONLY
-  if (ctx.chat.type === "private") return;
+  if (ctx.chat.type !== "private") return;
 
-  const groupId = String(ctx.chat.id);
-  const sessionRef = db.collection("sessions").doc(groupId);
-  const snap = await sessionRef.get();
-
-  if (!snap.exists) return;
-
-  const session = snap.data();
-
-  // ONLY ADMIN CAN DEFINE WORLD
-  if (String(ctx.from.id) !== session.adminId) {
-    return ctx.reply("⛔ Only the world creator may define this.");
-  }
-
+  const userId = String(ctx.from.id);
   const text = ctx.message.text.trim();
-  const key = `${groupId}_${session.step}`;
+
+  const sessionRef = db.collection("sessions").doc(`player_${userId}`);
+  const sessionSnap = await sessionRef.get();
+
+  if (!sessionSnap.exists) return;
+
+  const session = sessionSnap.data();
 
   /* =====================
-   WORLD NAME (UNIQUE)
-===================== */
-  if (session.step === "WORLD_NAME") {
-    const worldName = text.replace(/\s+/g, " ").trim();
-
-    if (worldName.length < 3 || worldName.length > 40) {
-      return ctx.reply("❌ World name must be 3–40 characters long.");
+     CHARACTER NAME STEP
+  ===================== */
+  if (session.step === "CHARACTER_NAME") {
+    if (text.length < 2 || text.length > 30) {
+      return ctx.reply("❌ Character name must be 2–30 characters long.");
     }
 
-    // 🔍 Check uniqueness (case-insensitive)
-    const existing = await db
-      .collection("worlds")
-      .where("meta.name_lower", "==", worldName.toLowerCase())
-      .limit(1)
-      .get();
+    const worldRef = db.collection("worlds").doc(session.worldId);
+    const worldSnap = await worldRef.get();
 
-    if (!existing.empty) {
-      return ctx.reply(
-        "⚠️ A world with this name already exists.\n\n" +
-        "Please choose a different name."
-      );
+    if (!worldSnap.exists) {
+      await sessionRef.delete();
+      return ctx.reply("❌ The world no longer exists.");
     }
 
-    await sessionRef.update({
-      worldName,
-      worldNameLower: worldName.toLowerCase(),
-      buffer: [],               // 🔑 reset buffer
-      step: "WORLD_PROMPT"
+    const playerRef = worldRef.collection("players").doc(userId);
+
+    // 🔒 Safety check (no overwrite)
+    const existing = await playerRef.get();
+    if (existing.exists) {
+      await sessionRef.delete();
+      return ctx.reply("🧭 You are already registered in this world.");
+    }
+
+    await playerRef.set({
+      userId,
+      telegram: {
+        id: userId,
+        username: ctx.from.username || null,
+        firstName: ctx.from.first_name || null
+      },
+      character: {
+        name: text
+      },
+      stats: {
+        hp: 100,
+        stamina: 100,
+        will: 10
+      },
+      effects: {},
+      relationships: {},
+      createdAt: Date.now(),
+      lastActive: Date.now()
     });
 
+    await sessionRef.delete();
 
     return ctx.reply(
-      "🌏 WORLD BUILDING PROMPT\n\n" +
-      "Send the lore, history, factions, and power systems.\n" +
-      "You may send multiple messages.",
+      `✨ ${text} has entered the world.\n\n` +
+      `🌍 World: ${worldSnap.data().meta.name}\n` +
+      `📜 Await the call of fate…`,
       { parse_mode: "Markdown" }
     );
-  }
-
-
-  /* =====================
-     WORLD PROMPT (MULTI)
-  ===================== */
-  if (session.step === "WORLD_PROMPT") {
-    // FINALIZE WORLD PROMPT
-    if (text.toLowerCase() === "/done") {
-
-      if (!session.buffer.length) {
-        return ctx.reply("⚠️ Prompt cannot be empty.");
-      }
-
-
-      // Cancel pending debounce reply
-      if (ackTimers.has(key)) {
-        clearTimeout(ackTimers.get(key));
-        ackTimers.delete(key);
-      }
-
-      const fullWorldPrompt = session.buffer
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      await sessionRef.update({
-        worldPrompt: fullWorldPrompt,
-        buffer: [],
-        step: "SYSTEM_PROMPT"
-      });
-
-      return ctx.reply(
-        "🧠 SYSTEM PROMPT\n\n" +
-        "Send the system prompt in one or more messages.\n" +
-        { parse_mode: "Markdown" }
-      );
-    }
-
-    // BUFFER INPUT
-    await sessionRef.update({
-      buffer: admin.firestore.FieldValue.arrayUnion(text)
-    });
-
-    // DEBOUNCED ACK
-    if (ackTimers.has(key)) {
-      clearTimeout(ackTimers.get(key));
-    }
-
-    ackTimers.set(
-      key,
-      setTimeout(async () => {
-        await ctx.reply("📥 Added. Continue or send /done when finished.");
-        ackTimers.delete(key);
-      }, 1000)
-    );
-
-    return;
-  }
-
-  /* =====================
-     SYSTEM PROMPT (MULTI)
-  ===================== */
-  if (session.step === "SYSTEM_PROMPT") {
-    if (!session.worldPrompt) {
-      return ctx.reply("⚠️ World prompt missing. Restart with /init.");
-    }
-
-
-    // FINALIZE SYSTEM PROMPT
-    if (text.toLowerCase() === "/done") {
-      if (!session.buffer.length) {
-        return ctx.reply("⚠️ Prompt cannot be empty.");
-      }
-
-      // Cancel pending debounce reply
-      if (ackTimers.has(key)) {
-        clearTimeout(ackTimers.get(key));
-        ackTimers.delete(key);
-      }
-
-      const fullSystemPrompt = session.buffer
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      const worldId = `world_${Date.now()}`;
-
-      await db.collection("worlds").doc(worldId).set({
-        meta: {
-          id: worldId,
-          name: session.worldName,
-          name_lower: session.worldNameLower, // 🔑 REQUIRED
-          groupId,
-          createdBy: session.adminId,
-          phase: 1,
-          round: 0,
-          currentTurn: "",
-          worldState: "",
-          maxPlayers: 1,
-          createdAt: Date.now()
-        },
-        prompts: {
-          worldPrompt: session.worldPrompt,
-          systemPrompt: fullSystemPrompt
-        }
-      });
-
-
-      await db.collection("groups").doc(groupId).set({
-        activeWorldId: worldId,
-        updatedAt: Date.now()
-      });
-
-      await sessionRef.delete();
-
-      return ctx.reply(
-        `✅ World Created Successfully\n\n` +
-        `🌍 Name: \`${session.worldName}\`\n` +
-        `📌 Currently active in this group\n\n` +
-        `Players may now DM /start`,
-        { parse_mode: "Markdown" }
-      );
-    }
-
-    // BUFFER INPUT
-    await sessionRef.update({
-      buffer: admin.firestore.FieldValue.arrayUnion(text)
-    });
-
-    // DEBOUNCED ACK
-    if (ackTimers.has(key)) {
-      clearTimeout(ackTimers.get(key));
-    }
-
-    ackTimers.set(
-      key,
-      setTimeout(async () => {
-        await ctx.reply("📥 Added. Continue or send /done when finished.");
-        ackTimers.delete(key);
-      }, 1000)
-    );
-
-    return;
   }
 });
 
