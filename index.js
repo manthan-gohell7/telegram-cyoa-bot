@@ -39,28 +39,65 @@ const awaitingName = new Set();
 bot.command("init", async (ctx) => {
   if (ctx.chat.id !== ADMIN_GROUP_ID) return;
 
-  if ((await WORLD_REF.get()).exists) {
-    await ctx.reply("⚠️ World already initialized.");
+  const snap = await WORLD_REF.get();
+
+  // World does not exist → create it
+  if (!snap.exists) {
+    await WORLD_REF.set({
+      status: "SETUP",
+      setup: {
+        worldPrompt: "",
+        systemPrompt: "",
+        rolePrompt: ""
+      },
+      roles: [],
+      rolesTaken: [],
+      players: {}
+    });
+
+    await ctx.reply(
+      "✅ World initialized.\n\n" +
+      "✏️ Populate prompts in Firestore.\n" +
+      "📢 Use /done when ready."
+    );
     return;
   }
 
-  await WORLD_REF.set({
-    status: "SETUP",
-    setup: {
-      worldPrompt: "",
-      systemPrompt: "",
-      rolePrompt: ""
-    },
-    roles: [],
-    rolesTaken: [],
-    players: {}
-  });
+  // World exists → resume based on state
+  const world = snap.data();
 
-  await ctx.reply(
-    "✅ World initialized.\n\n" +
-    "✏️ Populate prompts in Firestore.\n" +
-    "📢 Use /done when ready."
-  );
+  switch (world.status) {
+    case "SETUP":
+      await ctx.reply(
+        "⚠️ World already initialized.\n\n" +
+        "✏️ Populate prompts in Firestore.\n" +
+        "📢 Use /done when ready."
+      );
+      break;
+
+    case "WAITING_PLAYERS":
+      await ctx.reply(
+        "🕰 *World is ready.*\n\n" +
+        "📩 Players may DM `/start` to join.",
+        { parse_mode: "Markdown" }
+      );
+      break;
+
+    case "ROLE_SELECTION":
+      await ctx.reply(
+        "🎭 Role selection has already started."
+      );
+      break;
+
+    case "RUNNING":
+      await ctx.reply(
+        "⚔️ Game is already in progress."
+      );
+      break;
+
+    default:
+      await ctx.reply("❌ Unknown world state.");
+  }
 });
 
 /* =====================
