@@ -49,18 +49,33 @@ async function checkAndStartRoleSelection(bot) {
   ) {
     await WORLD_REF.update({ status: "ROLE_SELECTION" });
 
+    // Group announcement (already exists)
     let msg = "🎭 *ROLE SELECTION*\n\n";
     world.roles.forEach((r, i) => {
       msg += `${i + 1}. ${r}\n`;
     });
-
-    msg += "\n📩 Role selection will begin in DM.";
+    msg += "\n📩 Select your role in DM.";
 
     await bot.telegram.sendMessage(
       ADMIN_GROUP_ID,
       msg,
       { parse_mode: "Markdown" }
     );
+
+    // 🔥 NEW: DM each player
+    for (const playerId of Object.keys(players)) {
+      await bot.telegram.sendMessage(
+        playerId,
+        "🎭 *Choose your role*",
+        {
+          parse_mode: "Markdown",
+          reply_markup: buildRoleKeyboard(
+            world.roles,
+            world.rolesTaken || []
+          )
+        }
+      );
+    }
   }
 }
 
@@ -190,6 +205,16 @@ bot.command("done", async (ctx) => {
   );
 });
 
+function buildRoleKeyboard(roles, rolesTaken) {
+  const available = roles.filter(r => !rolesTaken.includes(r));
+
+  return {
+    inline_keyboard: available.map(role => [
+      { text: role, callback_data: `ROLE_PICK:${role}` }
+    ])
+  };
+}
+
 /* =====================
    /START – PLAYER JOIN
 ===================== */
@@ -313,6 +338,68 @@ bot.on("text", async (ctx) => {
       msg,
       { parse_mode: "Markdown" }
     );
+  }
+});
+
+bot.on("callback_query", async (ctx) => {
+  const data = ctx.callbackQuery.data;
+  if (!data.startsWith("ROLE_PICK:")) return;
+
+  const chosenRole = data.split(":")[1];
+  const playerId = String(ctx.from.id);
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(WORLD_REF);
+      const world = snap.data();
+
+      const players = world.players || {};
+      const rolesTaken = world.rolesTaken || [];
+
+      // Player validity
+      if (!players[playerId]) {
+        throw new Error("You are not registered.");
+      }
+
+      // Already has a role
+      if (players[playerId].role) {
+        throw new Error("You already selected a role.");
+      }
+
+      // Role already taken
+      if (rolesTaken.includes(chosenRole)) {
+        throw new Error("Role already taken.");
+      }
+
+      // Assign role
+      players[playerId].role = chosenRole;
+      rolesTaken.push(chosenRole);
+
+      tx.update(WORLD_REF, {
+        players,
+        rolesTaken
+      });
+    });
+
+    // Success message
+    await ctx.editMessageText(
+      `✅ You selected *${chosenRole}*`,
+      { parse_mode: "Markdown" }
+    );
+
+    // Notify group
+    const snap = await WORLD_REF.get();
+    const world = snap.data();
+    const characterName = world.players[playerId].characterName;
+
+    await bot.telegram.sendMessage(
+      ADMIN_GROUP_ID,
+      `🎭 *${characterName}* has chosen *${chosenRole}*`,
+      { parse_mode: "Markdown" }
+    );
+
+  } catch (err) {
+    await ctx.answerCbQuery(err.message, { show_alert: true });
   }
 });
 
