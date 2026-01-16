@@ -36,7 +36,6 @@ app.use(express.json());
 ===================== */
 const awaitingName = new Set();
 const awaitingChoice = new Set();
-const pendingPrompts = new Map(); // userId -> { type, parts: [] }
 
 /* =====================
    GROQ API CALL
@@ -212,17 +211,21 @@ async function setWorld(data) {
 ===================== */
 async function initializeWorld() {
   await setWorld({
-    status: "AWAITING_WORLD_PROMPT",
+    status: "SETUP_PENDING",
+
     setup: {
       worldPrompt: "",
       systemPrompt: "",
       rolePrompt: ""
     },
+
     roles: [],
     rolesTaken: [],
     players: {},
+
     worldState: "",
     currentPhase: 0,
+    phaseChoices: {},
     gameLog: []
   });
 }
@@ -236,87 +239,27 @@ bot.command("init", async (ctx) => {
   const world = await getWorld();
 
   if (!world) {
-    // First time initialization
     await initializeWorld();
+
     await ctx.reply(
-      "🌍 *WORLD INITIALIZATION STARTED*\n\n" +
-      "Please provide the *World Building Prompt*.\n\n" +
-      "⚠️ Due to Telegram message limits, you can send this in multiple messages.\n" +
-      "When done, type /done to proceed to the next step.",
+      "🌍 *World initialized*\n\n" +
+      "A pseudo-database has been created in Firestore.\n\n" +
+      "✍️ Please manually fill the following fields:\n" +
+      "• setup.worldPrompt\n" +
+      "• setup.systemPrompt\n" +
+      "• setup.rolePrompt\n\n" +
+      "After filling all three, run /done",
       { parse_mode: "Markdown" }
     );
     return;
   }
 
-  // Resume from where we left off
-  const status = world.status;
-
-  switch (status) {
-    case "AWAITING_WORLD_PROMPT":
-      await ctx.reply(
-        "📝 *Waiting for World Building Prompt*\n\n" +
-        "Send your world prompt in one or multiple messages.\n" +
-        "Type /done when complete.",
-        { parse_mode: "Markdown" }
-      );
-      break;
-
-    case "AWAITING_SYSTEM_PROMPT":
-      await ctx.reply(
-        "📝 *Waiting for System Prompt*\n\n" +
-        "Send your system/game master prompt.\n" +
-        "Type /done when complete.",
-        { parse_mode: "Markdown" }
-      );
-      break;
-
-    case "AWAITING_ROLE_PROMPT":
-      await ctx.reply(
-        "📝 *Waiting for Character Roles Prompt*\n\n" +
-        "Send your character roles (format: numbered list).\n" +
-        "Type /done when complete.",
-        { parse_mode: "Markdown" }
-      );
-      break;
-
-    case "WAITING_PLAYERS":
-      const joined = Object.keys(world.players || {}).length;
-      await ctx.reply(
-        `✅ *World is ready for players*\n\n` +
-        `Players joined: ${joined}/${MAX_PLAYERS}\n\n` +
-        `Players can join by sending /start in DM.`,
-        { parse_mode: "Markdown" }
-      );
-      break;
-
-    case "ROLE_SELECTION":
-      await ctx.reply(
-        "🎭 *Role selection in progress*\n\n" +
-        "Waiting for all players to choose their roles.",
-        { parse_mode: "Markdown" }
-      );
-      await resumeRoleSelection();
-      break;
-
-    case "RUNNING":
-      await ctx.reply(
-        "⚔️ *Game is currently running*\n\n" +
-        `Phase: ${world.currentPhase}`,
-        { parse_mode: "Markdown" }
-      );
-      break;
-
-    case "COMPLETED":
-      await ctx.reply(
-        "🏁 *Story has concluded*\n\n" +
-        "Use /reset to start a new story (this will clear all data).",
-        { parse_mode: "Markdown" }
-      );
-      break;
-
-    default:
-      await ctx.reply("❌ Unknown world state. Contact administrator.");
-  }
+  await ctx.reply(
+    "ℹ️ *World already exists*\n\n" +
+    "If you have updated the prompts in Firestore,\n" +
+    "run /done to continue.",
+    { parse_mode: "Markdown" }
+  );
 });
 
 /* =====================
@@ -381,96 +324,50 @@ bot.command("done", async (ctx) => {
     return;
   }
 
-  const key = "admin_prompt";
-  const pending = pendingPrompts.get(key);
+  const { worldPrompt, systemPrompt, rolePrompt } = world.setup;
 
-  if (!pending || pending.parts.length === 0) {
-    await ctx.reply("❌ No prompt data received. Please send your prompt first.");
+  if (!worldPrompt || !systemPrompt || !rolePrompt) {
+    await ctx.reply(
+      "❌ *Setup incomplete*\n\n" +
+      "Please ensure all of the following are filled in Firestore:\n" +
+      "• setup.worldPrompt\n" +
+      "• setup.systemPrompt\n" +
+      "• setup.rolePrompt",
+      { parse_mode: "Markdown" }
+    );
     return;
   }
 
-  const combinedPrompt = pending.parts.join("\n\n");
-  const status = world.status;
+  // Parse roles
+  const roles = rolePrompt
+    .split("\n")
+    .map(l => l.trim())
+    .filter(l => /^\d+\.\s/.test(l))
+    .map(l => l.replace(/^\d+\.\s*/, "").split(/[(\-]/)[0].trim())
+    .filter(Boolean);
 
-  // Verify we're processing the right prompt type
-  if (pending.type !== status) {
-    await ctx.reply(`❌ Status mismatch. Expected ${status} but got ${pending.type}. Please try again.`);
+  if (roles.length === 0) {
+    await ctx.reply(
+      "❌ No valid roles found.\n" +
+      "Role prompt must be a numbered list.",
+      { parse_mode: "Markdown" }
+    );
     return;
   }
 
-  pendingPrompts.delete(key);
+  await updateWorld({
+    roles,
+    rolesTaken: [],
+    status: "WAITING_PLAYERS"
+  });
 
-  switch (status) {
-    case "AWAITING_WORLD_PROMPT":
-      await updateWorld({
-        "setup.worldPrompt": combinedPrompt,
-        status: "AWAITING_SYSTEM_PROMPT"
-      });
-      await ctx.reply(
-        "✅ *World Prompt saved!*\n\n" +
-        "Now send the *System/Game Master Prompt*.\n" +
-        "Type /done when complete.",
-        { parse_mode: "Markdown" }
-      );
-      break;
-
-    case "AWAITING_SYSTEM_PROMPT":
-      await updateWorld({
-        "setup.systemPrompt": combinedPrompt,
-        status: "AWAITING_ROLE_PROMPT"
-      });
-      await ctx.reply(
-        "✅ *System Prompt saved!*\n\n" +
-        "Now send the *Character Roles Prompt*.\n" +
-        "Format as numbered list:\n" +
-        "1. Warrior\n" +
-        "2. Mage\n" +
-        "etc.\n\n" +
-        "Type /done when complete.",
-        { parse_mode: "Markdown" }
-      );
-      break;
-
-    case "AWAITING_ROLE_PROMPT":
-      // Parse roles from prompt
-      const roles = combinedPrompt
-        .split("\n")
-        .map(l => l.trim())
-        .filter(l => /^\d+\.\s/.test(l))
-        .map(l => l.replace(/^\d+\.\s*/, "").split(/[(\-]/)[0].trim())
-        .filter(r => r.length > 0);
-
-      if (roles.length === 0) {
-        await ctx.reply(
-          "❌ No roles detected. Please format as:\n" +
-          "1. Role Name\n" +
-          "2. Another Role\n\n" +
-          "Send the roles again and use /done."
-        );
-        return;
-      }
-
-      await updateWorld({
-        "setup.rolePrompt": combinedPrompt,
-        roles,
-        rolesTaken: [],
-        status: "WAITING_PLAYERS"
-      });
-
-      await ctx.reply(
-        `✅ *Setup Complete!*\n\n` +
-        `Detected roles:\n${roles.map((r, i) => `${i + 1}. ${r}`).join("\n")}\n\n` +
-        `🎮 *The world is now open for players!*\n\n` +
-        `Players can join by sending /start to the bot in DM.\n` +
-        `Max players: ${MAX_PLAYERS}`,
-        { parse_mode: "Markdown" }
-      );
-      break;
-
-    default:
-      await ctx.reply("❌ /done can only be used during setup phase.");
-  }
-})
+  await ctx.reply(
+    "✅ *Setup complete!*\n\n" +
+    "Players can now join via /start in DM.\n\n" +
+    `Max players: ${MAX_PLAYERS}`,
+    { parse_mode: "Markdown" }
+  );
+});
 
 /* =====================
    PLAYER JOIN (/start)
