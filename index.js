@@ -9,8 +9,9 @@ import axios from "axios";
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_GROUP_ID = Number(process.env.ADMIN_GROUP_ID);
 const PORT = process.env.PORT || 3000;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+// const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const MAX_PLAYERS = 3; // Adjust as needed
+const GOOGLE_API_KEY=process.env.GOOGLE_API_KEY;
 
 /* =====================
    FIREBASE SETUP
@@ -41,7 +42,7 @@ const awaitingChoice = new Set();
    GROQ API CALL
 ===================== */
 async function callGroq(systemPrompt, userPrompt, temperature = 0.85) {
-  try {
+ /* try {
     const res = await axios.post(
       "https://api.groq.com/openai/v1/chat/completions",
       {
@@ -63,7 +64,54 @@ async function callGroq(systemPrompt, userPrompt, temperature = 0.85) {
   } catch (error) {
     console.error("Groq API Error:", error.response?.data || error.message);
     throw new Error("Failed to generate content from AI");
-  }
+  } */
+
+   try {
+    const res = await axios.post(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent",
+      {
+        systemInstruction: {
+          role: "system",
+          parts: [{ text: systemPrompt }]
+        },
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: userPrompt }]
+          }
+        ],
+        generationConfig: {
+          temperature,
+          topP: 0.95,
+          maxOutputTokens: 1024
+        }
+      },
+      {
+        params: {
+          key: process.env.GOOGLE_API_KEY
+        },
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    // return res.data.candidates[0].content.parts[0].text;
+      const text =
+  res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+if (!text) {
+  throw new Error("Empty response from Gemma");
+}
+
+return text;
+  } catch (error) {
+    console.error(
+      "Gemma API Error:",
+      error.response?.data || error.message
+    );
+    throw new Error("Failed to generate content from Gemma");
+   }
 }
 
 /* =====================
