@@ -984,7 +984,23 @@ async function sendGroupNarration(isFirst = false) {
   const groupPrompt = buildGroupNarrationPrompt(
     world.setup.worldPrompt,
     world.worldState,
-    world.setup.systemPrompt
+    world.setup.systemPrompt + (isFirst ? `
+    FIRST WORLD NARRATION RULE (CRITICAL)
+
+This is the opening world narration.
+
+- Do NOT advance the main plot.
+- Do NOT reveal conflicts involving the three protagonists.
+- Do NOT describe irreversible events.
+
+Your goal is ONLY to establish:
+- Atmosphere
+- World condition
+- Tension
+- The feeling of decay, delay, and imbalance
+
+This narration exists to ground the players, not to move the story forward.
+    ` : "")
   );
 
   let groupText;
