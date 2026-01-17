@@ -117,6 +117,7 @@ ${userPrompt}`
     );
     throw new Error("Failed to generate content from Gemma");
   }
+}
 
 /* =====================
    PROMPT BUILDERS
