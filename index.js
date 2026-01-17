@@ -70,14 +70,20 @@ async function callGroq(systemPrompt, userPrompt, temperature = 0.85) {
     const res = await axios.post(
       "https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent",
       {
-        systemInstruction: {
-          role: "system",
-          parts: [{ text: systemPrompt }]
-        },
         contents: [
           {
             role: "user",
-            parts: [{ text: userPrompt }]
+            parts: [
+              {
+                text:
+`SYSTEM RULES (MANDATORY):
+${systemPrompt}
+
+---
+PLAYER INPUT:
+${userPrompt}`
+              }
+            ]
           }
         ],
         generationConfig: {
@@ -96,23 +102,21 @@ async function callGroq(systemPrompt, userPrompt, temperature = 0.85) {
       }
     );
 
-    // return res.data.candidates[0].content.parts[0].text;
-      const text =
-  res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const text =
+      res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
-if (!text) {
-  throw new Error("Empty response from Gemma");
-}
+    if (!text) {
+      throw new Error("Empty response from Gemma");
+    }
 
-return text;
+    return text;
   } catch (error) {
     console.error(
       "Gemma API Error:",
       error.response?.data || error.message
     );
     throw new Error("Failed to generate content from Gemma");
-   }
-}
+  }
 
 /* =====================
    PROMPT BUILDERS
