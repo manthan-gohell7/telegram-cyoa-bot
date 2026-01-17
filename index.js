@@ -284,6 +284,7 @@ bot.start(async (ctx) => {
    /INIT COMMAND
 ===================== */
 bot.command("init", async (ctx) => {
+  console.log("/INIT hit!");
   if (ctx.chat.id !== ADMIN_GROUP_ID) return;
 
   const snap = await WORLD_REF.get();
@@ -309,6 +310,7 @@ bot.command("init", async (ctx) => {
   let justCompletedRoleExtraction = false;
 
   if (world.status === "EXTRACT_ROLES_FAILED") {
+    console.log("/INIT hit : EXTRACT_ROLES_FAILED");
     const roles = extractRoles(rolePrompt);
 
     if (roles.length === 0) {
@@ -346,6 +348,7 @@ bot.command("init", async (ctx) => {
   }
 
   if (world.status === "WAITING_PLAYERS") {
+    console.log("/INIT hit : WAITING_PLAYERS");
     const players = world.players || {};
 
     let message = "";
@@ -370,6 +373,8 @@ bot.command("init", async (ctx) => {
   }
 
   if (world.status === "ROLE_SELECTION") {
+    console.log("/INIT hit : ROLE_SELECTION");
+
     const players = world.players || {};
     const allSelected = Object.values(players).every(p => p.role);
 
@@ -442,6 +447,8 @@ bot.command("init", async (ctx) => {
     // Generate and send personal narrations
     await sendPersonalNarrations();
   } else if (world.status === "RUNNING") {
+    console.log("/INIT hit : RUNNING");
+
     await ctx.reply(
       "ℹ️ *World already exists.*\n\n" +
       "If you want to reset the world, run /reset.\n",
