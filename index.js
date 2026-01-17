@@ -1161,6 +1161,7 @@ async function checkAndProcessPhase() {
 /* =====================
    SERVER & LAUNCH
 ===================== */
+
 app.get("/", (req, res) => {
   res.send("🤖 Telegram RPG Bot is running");
 });
@@ -1169,12 +1170,16 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-bot.launch().then(() => {
-  console.log("✅ Bot started successfully");
-});
+const WEBHOOK_PATH = "/telegram-webhook";
+const WEBHOOK_URL = `${process.env.RENDER_EXTERNAL_URL}${WEBHOOK_PATH}`;
 
-app.listen(PORT, () => {
+app.use(bot.webhookCallback(WEBHOOK_PATH));
+
+app.listen(PORT, async () => {
   console.log(`✅ Server running on port ${PORT}`);
+
+  await bot.telegram.setWebhook(WEBHOOK_URL);
+  console.log("✅ Telegram webhook set:", WEBHOOK_URL);
 });
 
 // Graceful shutdown
