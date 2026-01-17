@@ -10,7 +10,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_GROUP_ID = Number(process.env.ADMIN_GROUP_ID);
 const PORT = process.env.PORT || 3000;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const MAX_PLAYERS = 1; // Adjust as needed
+const MAX_PLAYERS = 3; // Adjust as needed
 
 /* =====================
    FIREBASE SETUP
@@ -289,8 +289,14 @@ bot.command("init", async (ctx) => {
 
   const snap = await WORLD_REF.get();
 
-  if (!snap.exists) {
-    await initializeWorld();
+  const world = snap.exists ? snap.data() : null;
+
+  console.log(`data exists - ${snap.exists}, world status - ${world?.status ?? "null"}`);
+
+  if (!snap.exists || world.status === "SETUP") {
+    if (!snap.exists || !world?.status) {
+      await initializeWorld();
+    }
 
     await ctx.reply(
       "✅ *World initialized*\n\n" +
@@ -305,7 +311,6 @@ bot.command("init", async (ctx) => {
     return;
   }
 
-  const world = getWorld();
 
   let justCompletedRoleExtraction = false;
 
